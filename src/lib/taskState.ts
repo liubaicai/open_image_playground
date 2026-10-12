@@ -22,6 +22,29 @@ export function createTaskErrorPatch(task: Pick<TaskRecord, 'createdAt' | 'start
   }
 }
 
+export function markArchivedAgentTasks(tasks: TaskRecord[], now: number) {
+  const archivedTasks: TaskRecord[] = []
+  const updatedTasks = tasks.map((task) => {
+    const isAgentTask = task.sourceMode === 'agent' || Boolean(task.agentConversationId || task.agentRoundId)
+    if (!isAgentTask || (task.status !== 'running' && !task.falRecoverable && !task.customRecoverable)) return task
+
+    const archived: TaskRecord = {
+      ...task,
+      ...(task.status === 'done' ? {} : {
+        status: 'error' as const,
+        error: task.error ? `Agent 模式已停用，旧任务已归档。\n${task.error}` : 'Agent 模式已停用，旧任务已归档。',
+        finishedAt: task.finishedAt ?? now,
+        elapsed: task.elapsed ?? Math.max(0, now - (task.startedAt ?? task.createdAt)),
+      }),
+      falRecoverable: false,
+      customRecoverable: false,
+    }
+    archivedTasks.push(archived)
+    return archived
+  })
+  return { tasks: updatedTasks, archivedTasks }
+}
+
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: number) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {

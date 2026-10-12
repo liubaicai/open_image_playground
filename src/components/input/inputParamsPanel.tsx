@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
 import { isTauri } from '../../lib/platform'
@@ -99,6 +99,7 @@ export default function InputParamsPanel({
   activeProfile,
   modelOptions,
   onModelChange,
+  modelSelector,
   isFalProvider,
   isFalTextToImage,
   displaySize,
@@ -149,6 +150,7 @@ export default function InputParamsPanel({
   activeProfile: ApiProfile
   modelOptions: Array<{ label: string; value: string }>
   onModelChange: (model: string) => void
+  modelSelector?: ReactNode
   isFalProvider: boolean
   isFalTextToImage: boolean
   displaySize: string
@@ -212,14 +214,14 @@ export default function InputParamsPanel({
     <div className="flex flex-1 flex-wrap sm:flex-nowrap items-center gap-2 min-w-0 text-xs">
       {/* 极小的收缩权重：先截断“更多”的摘要，放不下时才压缩模型 ID */}
       <div className="min-w-0 max-w-full sm:shrink-[0.01] max-sm:flex-auto">
-        <Select
+        {modelSelector ?? <Select
           value={activeProfile.model}
           onChange={(val) => onModelChange(String(val))}
           options={modelOptions}
           showValueTooltips
           menuClassName="min-w-max"
           className={CHIP_CLASS}
-        />
+        />}
       </div>
       <div
         className="relative max-sm:flex-auto sm:shrink-0"

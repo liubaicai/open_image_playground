@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { initStore, useStore } from './store'
 import { clearUrlSettingParams, hasUrlSettingParams } from './lib/urlSettings'
-import { createDefaultOpenAIProfile, hasDefaultPresetConfig, isAgentTextApiProfile, normalizeSettings } from './lib/apiProfiles'
+import { createDefaultOpenAIProfile, hasDefaultPresetConfig, normalizeSettings } from './lib/apiProfiles'
 import { getCustomProviderConfigUrl, hasEmbeddedDefaultConfig, loadCustomProviderSettingsFromUrl, loadEmbeddedDefaultConfig } from './lib/customProviderConfigUrl'
 import { getDefaultPresetProfileId, getPresetProfileIds, isPresetConfigOnlyEnabled, setPresetConfig } from './lib/presetConfig'
 import { useDockerApiUrlMigrationNotice } from './hooks/useDockerApiUrlMigrationNotice'
@@ -13,7 +13,6 @@ import { useSaveLocationPrompt } from './hooks/useSaveLocationPrompt'
 import Header from './components/Header'
 import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
-import AgentWorkspace from './components/AgentWorkspace'
 import InputBar from './components/InputBar'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
@@ -40,7 +39,6 @@ import { getTauriStorageLoadError } from './lib/tauriStorage'
 let defaultConfigImportStarted = false
 
 export default function App() {
-  const appMode = useStore((s) => s.appMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   const writeLogFile = useStore((s) => s.settings.writeLogFile)
@@ -161,12 +159,6 @@ export default function App() {
               activeProfileId: presetIds.has(current.settings.activeProfileId)
                 ? current.settings.activeProfileId
                 : defaultPresetId ?? [...presetIds][0],
-              agentTextProfileId: current.settings.agentTextProfileId && presetIds.has(current.settings.agentTextProfileId)
-                ? current.settings.agentTextProfileId
-                : current.settings.profiles.find((profile) => presetIds.has(profile.id) && isAgentTextApiProfile(profile))?.id ?? null,
-              agentImageProfileId: current.settings.agentImageProfileId && presetIds.has(current.settings.agentImageProfileId)
-                ? current.settings.agentImageProfileId
-                : defaultPresetId ?? [...presetIds][0],
             })
           : current.settings
         current.setSettings(settings)
@@ -197,16 +189,12 @@ export default function App() {
   return (
     <>
       <Header />
-      {appMode === 'agent' ? (
-        <AgentWorkspace />
-      ) : (
-        <main data-home-main data-drag-select-surface className="pb-48">
-          <div className="safe-area-x max-w-7xl mx-auto">
-            <SearchBar />
-            {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
-          </div>
-        </main>
-      )}
+      <main data-home-main data-drag-select-surface className="pb-48">
+        <div className="safe-area-x max-w-7xl mx-auto">
+          <SearchBar />
+          {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
+        </div>
+      </main>
       <InputBar />
       <DetailModal />
       <Lightbox />

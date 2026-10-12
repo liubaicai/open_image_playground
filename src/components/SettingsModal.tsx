@@ -9,6 +9,7 @@ import { isTauri } from '../lib/platform'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
+  createDefaultOpenRouterProfile,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -20,7 +21,6 @@ import {
   getCustomProviderDefinition,
   importCustomProviderSettingsFromJson,
   getDefaultApiProfileId,
-  isAgentTextApiProfile,
   isOpenAICompatibleProvider,
   mergeImportedSettings,
   normalizeAgentMaxToolRounds,
@@ -45,7 +45,7 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { createCustomProfileImportUrl } from '../lib/profileImportUrl'
 import { getProfileImportBaseUrl, handledImportLinks } from '../lib/importLink'
 import { requestBrowserNotificationPermission, type BrowserNotificationPermissionResult } from '../lib/browserNotification'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, REASONING_EFFORT_VALUES, type AgentApiConfigMode, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ReasoningEffort, type ZipDownloadRoute } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, REASONING_EFFORT_VALUES, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ReasoningEffort, type ZipDownloadRoute } from '../types'
 import {
   CUSTOM_PROVIDER_LLM_PROMPT,
   DEFAULT_CUSTOM_PROVIDER_JSON,
@@ -60,8 +60,9 @@ import ViewportTooltip from './ViewportTooltip'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon } from './icons'
 import { TooltipButton } from './TooltipButton'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
-import AgentSettingsTab from './settings/AgentSettingsTab'
+import PromptOptimizationSettings from '../extensions/promptOptimization/PromptOptimizationSettings'
 import FontLicensesModal from './settings/FontLicensesModal'
+import ModelSettings from '../extensions/imageProviders/ModelSettings'
 import CustomProviderModal from './settings/CustomProviderModal'
 import ProfileImportUrlModal, { type CopyImportUrlOptions } from './settings/ProfileImportUrlModal'
 import ZipDownloadRouteModal, { ZIP_DOWNLOAD_ROUTE_OPTIONS } from './settings/ZipDownloadRouteModal'
@@ -247,16 +248,17 @@ export default function SettingsModal() {
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
   const activeCustomProvider = getCustomProviderDefinition(draft, activeProfile.provider)
-  const activeCustomProviderSupportsNativeTransparentBackground = !activeCustomProvider || customProviderSupportsNativeTransparentBackground(activeCustomProvider)
+  const activeCustomProviderSupportsNativeTransparentBackground = activeProfile.provider !== 'openrouter' && (!activeCustomProvider || customProviderSupportsNativeTransparentBackground(activeCustomProvider))
   const activeProfileApiProxyEligible = isProfileApiProxyEligible(draft, activeProfile)
   const activeCustomProviderAsync = isAsyncCustomProvider(activeCustomProvider)
   const apiProxyChecked = activeProfileApiProxyEligible && (apiProxyLocked || activeProfile.apiProxy)
   const apiProxyEnabled = apiProxyAvailable && activeProfileApiProxyEligible && apiProxyChecked
-  const defaultProviderOrder = ['openai', 'sb2api-async', 'fal', ...draft.customProviders.map(p => p.id)]
+  const defaultProviderOrder = ['openai', 'sb2api-async', 'fal', 'openrouter', ...draft.customProviders.map(p => p.id)]
   const providerOrder = draft.providerOrder || defaultProviderOrder
 
   const unorderedProviderOptions = [
     { label: 'OpenAI 兼容接口', value: 'openai', draggable: true },
+    { label: 'OpenRouter', value: 'openrouter', draggable: true },
     { label: 'sub2api（异步）', value: 'sb2api-async', draggable: true },
     { label: 'fal.ai', value: 'fal', draggable: true },
     ...draft.customProviders.map((provider) => {
@@ -301,26 +303,6 @@ export default function SettingsModal() {
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
 
-  const agentProfiles = (presetConfigOnly ? visibleProfiles : draft.profiles)
-    .filter((profile) => {
-      if (!profile.apiKey.trim()) return false
-      if (profile.baseUrl.trim() || profile.provider === 'fal') return true
-      return apiProxyAvailable && isProfileApiProxyEligible(draft, profile) && (apiProxyLocked || profile.apiProxy)
-    })
-  const agentTextProfiles = agentProfiles.filter(isAgentTextApiProfile)
-  const selectedAgentTextProfile = agentTextProfiles.find((profile) => profile.id === draft.agentTextProfileId)
-    ?? null
-  const selectedAgentImageProfile = agentProfiles.find((profile) => profile.id === draft.agentImageProfileId)
-    ?? null
-  const agentTextProfileOptions = agentTextProfiles.map((profile) => ({
-    label: `${profile.name} · ${profile.model || DEFAULT_RESPONSES_MODEL}`,
-    value: profile.id,
-  }))
-  const agentImageProfileOptions = agentProfiles.map((profile) => ({
-    label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${profile.model}`,
-    value: profile.id,
-  }))
-
   const wasSettingsOpenRef = useRef(false)
 
   useEffect(() => {
@@ -361,7 +343,7 @@ export default function SettingsModal() {
   }, [settings.saveLocationMode])
 
   useEffect(() => {
-    if (showSettings && settingsTabRequest) setActiveTab(settingsTabRequest)
+    if (showSettings && settingsTabRequest) setActiveTab(settingsTabRequest === 'agent' ? 'api' : settingsTabRequest)
   }, [settingsTabRequest, showSettings])
 
   useLayoutEffect(() => {
@@ -442,7 +424,7 @@ export default function SettingsModal() {
       const normalizedBaseUrl = profile.provider === 'fal'
         ? profile.baseUrl.trim().replace(/\/+$/, '') || (profile.id === defaultProfileId ? '' : DEFAULT_FAL_BASE_URL)
         : shouldKeepEmptyBaseUrl ? '' : normalizeBaseUrl(profile.baseUrl.trim() || emptyBaseUrlFallback)
-      const defaultModel = profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
+      const defaultModel = profile.provider === 'openrouter' ? '' : profile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(profile.apiMode)
       return {
         ...profile,
         name: profile.name.trim() || (profile.id === defaultProfileId ? '默认' : '新配置'),
@@ -607,14 +589,6 @@ export default function SettingsModal() {
     updateActiveProfile({ timeout: normalizedTimeout }, true)
   }, [draft, activeProfile.id, activeProfile.provider, activeProfile.timeout, activeProfileLocked, timeoutInput])
 
-  const commitAgentMaxToolRounds = useCallback(() => {
-    const value = agentMaxToolRoundsInput.trim() === ''
-      ? DEFAULT_AGENT_MAX_TOOL_ROUNDS
-      : normalizeAgentMaxToolRounds(agentMaxToolRoundsInput, draft.agentMaxToolRounds)
-    setAgentMaxToolRoundsInput(String(value))
-    if (value !== draft.agentMaxToolRounds) commitSettings({ ...draft, agentMaxToolRounds: value })
-  }, [agentMaxToolRoundsInput, draft])
-
   const showNotificationPermissionMessage = (result: Exclude<BrowserNotificationPermissionResult, { ok: true }>) => {
     if (result.reason === 'unsupported') {
       showToast(isTauri ? '当前环境不支持系统通知' : '当前浏览器不支持系统通知', 'error')
@@ -728,10 +702,12 @@ export default function SettingsModal() {
     setShowProfileMenu(false)
   }
 
-  const createNewProfile = () => {
+  const createNewProfile = (provider: 'openai' | 'openrouter' = 'openai') => {
     if (presetConfigOnly) return
     setReusedTaskApiProfile(null)
-    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
+    const profile = provider === 'openrouter'
+      ? createDefaultOpenRouterProfile({ id: newId('openrouter') })
+      : createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
     const nextDraft = normalizeSettings({ 
         ...draft, 
         profiles: [...draft.profiles, profile],
@@ -739,25 +715,6 @@ export default function SettingsModal() {
     })
     commitSettings(nextDraft)
     setShowProfileMenu(false)
-  }
-
-  const updateAgentApiConfigMode = (mode: AgentApiConfigMode) => {
-    commitSettings({
-      ...draft,
-      agentApiConfigMode: mode,
-      agentTextProfileId: mode !== 'off'
-        ? selectedAgentTextProfile?.id
-          ?? agentTextProfiles.find((profile) => profile.id === activeProfile.id)?.id
-          ?? agentTextProfiles[0]?.id
-          ?? draft.agentTextProfileId
-        : draft.agentTextProfileId,
-      agentImageProfileId: mode === 'hybrid'
-        ? selectedAgentImageProfile?.id
-          ?? agentProfiles.find((profile) => profile.id === activeProfile.id)?.id
-          ?? agentProfiles[0]?.id
-          ?? draft.agentImageProfileId
-        : draft.agentImageProfileId,
-    })
   }
 
   const duplicateActiveProfile = () => {
@@ -941,7 +898,7 @@ export default function SettingsModal() {
   }
 
   const handleProviderReorder = (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => {
-    const currentOrder = draft.providerOrder || ['openai', 'sb2api-async', 'fal', ...draft.customProviders.map(p => p.id)]
+    const currentOrder = draft.providerOrder || ['openai', 'sb2api-async', 'fal', 'openrouter', ...draft.customProviders.map(p => p.id)]
     const sourceIndex = currentOrder.indexOf(String(sourceValue))
     const targetIndex = currentOrder.indexOf(String(targetValue))
     if (sourceIndex < 0 || targetIndex < 0) return
@@ -1199,15 +1156,15 @@ export default function SettingsModal() {
                 习惯配置
               </button>
               <button
-                onClick={() => setActiveTab('agent')}
-                className={`whitespace-nowrap flex-shrink-0 flex items-center gap-2.5 px-3 py-2.5 text-sm rounded-xl transition-colors ${activeTab === 'agent' ? 'bg-white dark:bg-white/[0.08] shadow-sm text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100/80 dark:hover:bg-white/[0.04]'}`}
+                onClick={() => setActiveTab('promptOptimization')}
+                className={`whitespace-nowrap flex-shrink-0 flex items-center gap-2.5 px-3 py-2.5 text-sm rounded-xl transition-colors ${activeTab === 'promptOptimization' ? 'bg-white dark:bg-white/[0.08] shadow-sm text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100/80 dark:hover:bg-white/[0.04]'}`}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8V4H8" />
                   <rect width="16" height="12" x="4" y="8" rx="2" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2 14h2M20 14h2M15 13v2M9 13v2" />
                 </svg>
-                Agent 配置
+                提示词优化
               </button>
               <button
                 onClick={() => setActiveTab('data')}
@@ -1247,21 +1204,10 @@ export default function SettingsModal() {
               />
             )}
 
-            {activeTab === 'agent' && (
-              <AgentSettingsTab
-                draft={draft}
-                agentMaxToolRoundsInput={agentMaxToolRoundsInput}
-                agentTextProfileOptions={agentTextProfileOptions}
-                agentImageProfileOptions={agentImageProfileOptions}
-                selectedAgentTextProfile={selectedAgentTextProfile}
-                selectedAgentImageProfile={selectedAgentImageProfile}
-                setAgentMaxToolRoundsInput={setAgentMaxToolRoundsInput}
-                updateAgentApiConfigMode={updateAgentApiConfigMode}
-                commitSettings={commitSettings}
-                commitAgentMaxToolRounds={commitAgentMaxToolRounds}
-              />
+            {activeTab === 'promptOptimization' && (
+              <PromptOptimizationSettings settings={draft} onChange={(promptOptimization) => commitSettings({ ...draft, promptOptimization })} />
             )}
-            
+
             {activeTab === 'api' && (
               <div className="space-y-4">
                 <div>
@@ -1361,6 +1307,11 @@ export default function SettingsModal() {
                               <PlusIcon className="h-4 w-4" />
                             </span>
                           </button>}
+                          {!presetConfigOnly && <button
+                            type="button"
+                            onClick={() => createNewProfile('openrouter')}
+                            className="flex w-full items-center px-3 py-2 text-left text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-500/10"
+                          >添加 OpenRouter 配置</button>}
                           <div>
                             {visibleProfiles.map((profile) => {
                               const isDefaultProfile = profile.id === defaultProfileId
@@ -1602,8 +1553,11 @@ export default function SettingsModal() {
                 </div>
               )}
 
+              {activeProfile.provider === 'openrouter' && (
+                <p className="text-xs leading-5 text-gray-500">使用 OpenRouter 官方 Images API。请选择支持图片生成的模型，并单独填写该服务的 API Key；切换服务商不会沿用其他服务商的密钥。</p>
+              )}
               {/* 7. 模型 ID（紧跟接口选择） */}
-              <label className="block">
+              {activeProfile.provider !== 'openrouter' && <label className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
                   模型 ID
                 </span>
@@ -1635,7 +1589,15 @@ export default function SettingsModal() {
                     <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
                   )}
                 </div>
-              </label>
+              </label>}
+              {(activeProfile.provider === 'openai' || activeProfile.provider === 'openrouter') && (
+                <ModelSettings
+                  key={`${activeProfile.id}:${activeProfile.provider}`}
+                  profile={activeProfile}
+                  onChange={(patch) => updateActiveProfile(patch, true)}
+                  disabled={activeProfileLocked}
+                />
+              )}
 
               {activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses' && (
                 <label className="block">
@@ -1675,7 +1637,7 @@ export default function SettingsModal() {
                     </div>
                   </div>
                   <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    用于指导模型在执行任务时的思考深度，更高的档位会使模型花费更长时间进行思考，有助于提升 Agent 模式下模型完成复杂任务的能力。并非所有模型都支持全部推理强度。支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?reasoningEffort=high</code>。
+                    用于指导模型在执行任务时的思考深度，更高的档位会使模型花费更长时间进行思考，有助于模型完成复杂任务。并非所有模型都支持全部推理强度。支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?reasoningEffort=high</code>。
                   </div>
                 </div>
               )}
@@ -1747,6 +1709,7 @@ export default function SettingsModal() {
                 <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                   {activeCustomProviderSupportsNativeTransparentBackground
                     ? `API 原生会请求接口直接生成透明背景，需当前接口支持；本地后处理会生成纯色背景并在${isTauri ? '本地' : '浏览器中'}去除。`
+                    : activeProfile.provider === 'openrouter' ? 'OpenRouter 模型的原生透明支持不统一，本扩展使用本地后处理。'
                     : <>当前自定义服务商 Manifest 未映射 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">$params.background</code>，无法使用 API 原生透明背景。</>}
                 </div>
               </div>

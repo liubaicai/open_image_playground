@@ -1,19 +1,17 @@
-import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { deleteFavoriteCollection, useStore, submitTask, submitAgentMessage, stopAgentResponse, stopBatchPrompts, addImageFromFile, removeMultipleTasks, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { deleteFavoriteCollection, useStore, submitTask, stopBatchPrompts, addImageFromFile, removeMultipleTasks, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
-import { getActiveAgentRounds } from '../lib/agentConversationState'
-import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
+import { getActiveApiProfile, normalizeSettings, resolveApiProfileModel } from '../lib/apiProfiles'
 import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
-import { ensureImageCached, getCachedImage } from '../lib/imageCache'
+import { ensureImageCached } from '../lib/imageCache'
 import { splitBatchPrompts } from '../lib/batchPrompts'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
-import { getAtImageQuery, getImageComments, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
+import { getAtImageQuery, getImageComments, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { normalizeCodexCliImageSize, normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
-import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
 import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds } from '../lib/favoriteState'
 import { getContentEditableCursor, getContentEditablePlainText, getContentEditableSelection, getMentionTagHtml, setContentEditableCursor, setContentEditableSelection, syncMentionTagSelection } from '../lib/contentEditableMentions'
 import { useHintTooltip } from '../hooks/useHintTooltip'
@@ -27,6 +25,13 @@ import ButtonTooltip from './input/buttonTooltip'
 import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
 import InputParamsPanel from './input/inputParamsPanel'
+import { getEnabledProfileModels } from '../extensions/imageProviders/modelPreferences'
+import OpenRouterParams from '../extensions/imageProviders/OpenRouterParams'
+import GroupedModelSelect from '../extensions/imageProviders/GroupedModelSelect'
+import { selectProfileModel } from '../extensions/imageProviders/groupedModels'
+import { readCachedOpenRouterImageModels, subscribeOpenRouterImageModels } from '../extensions/imageProviders/catalog'
+import { usePromptOptimization } from '../extensions/promptOptimization/usePromptOptimization'
+import PromptOptimizationActions from '../extensions/promptOptimization/PromptOptimizationActions'
 
 function getFavoriteCollectionTasksForBatch(collectionId: string, tasks: TaskRecord[], defaultFavoriteCollectionId: string | null) {
   const favoriteTasks = tasks.filter((task) => task.isFavorite)
@@ -48,46 +53,18 @@ function useIsMobile() {
   return isMobile
 }
 
-type AtImageOption =
-  | { type: 'input'; key: string; label: string; imageId: string; dataUrl: string; imageIndex: number }
-  | { type: 'agent-output'; key: string; label: string; imageId: string; insertText: string }
-
-function agentImageMentionMatches(query: string, label: string) {
-  const normalized = query.trim().toLowerCase()
-  if (!normalized) return true
-  const normalizedLabel = label.toLowerCase()
-  return normalizedLabel.includes(normalized) || normalizedLabel.replace(/^@/, '').includes(normalized)
-}
+type AtImageOption = { type: 'input'; key: string; label: string; imageId: string; dataUrl: string; imageIndex: number }
 
 function AtImageOptionThumb({ option }: { option: AtImageOption }) {
-  const [src, setSrc] = useState(option.type === 'input' ? option.dataUrl : getCachedImage(option.imageId) || '')
-
-  useEffect(() => {
-    if (option.type === 'input') {
-      setSrc(option.dataUrl)
-      return
-    }
-
-    let cancelled = false
-    setSrc(getCachedImage(option.imageId) || '')
-    ensureImageCached(option.imageId).then((url) => {
-      if (!cancelled && url) setSrc(url)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [option])
-
   return (
     <span className="h-9 w-9 shrink-0 overflow-hidden rounded-lg border border-gray-200/70 bg-gray-100 dark:border-white/[0.08] dark:bg-white/[0.04]">
-      {src && <img src={src} className="h-full w-full object-cover" alt="" />}
+      {option.dataUrl && <img src={option.dataUrl} className="h-full w-full object-cover" alt="" />}
     </span>
   )
 }
 
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
-  const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
   const inputImages = useStore((s) => s.inputImages)
   const addInputImage = useStore((s) => s.addInputImage)
@@ -102,6 +79,7 @@ export default function InputBar() {
   const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
   const reusedTaskApiModel = useStore((s) => s.reusedTaskApiModel)
   const setReusedTaskApiModel = useStore((s) => s.setReusedTaskApiModel)
+  const setReusedTaskApiProfile = useStore((s) => s.setReusedTaskApiProfile)
   const setShowSettings = useStore((s) => s.setShowSettings)
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
   const showToast = useStore((s) => s.showToast)
@@ -115,8 +93,6 @@ export default function InputBar() {
   const tasks = useStore((s) => s.tasks)
   const favoriteCollections = useStore((s) => s.favoriteCollections)
   const defaultFavoriteCollectionId = useStore((s) => s.defaultFavoriteCollectionId)
-  const agentConversations = useStore((s) => s.agentConversations)
-  const activeAgentConversationId = useStore((s) => s.activeAgentConversationId)
   const filterStatus = useStore((s) => s.filterStatus)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
@@ -362,6 +338,10 @@ export default function InputBar() {
   const imageDragPreviewRef = useRef<HTMLElement | null>(null)
   const suppressImageClickRef = useRef(false)
   const isUserInputRef = useRef(false)
+  const optimizer = usePromptOptimization(() => { isUserInputRef.current = false })
+  const promptActionPadding = optimizer.enabled
+    ? optimizer.loading || optimizer.canUndo ? 'pr-28' : 'pr-20'
+    : 'pr-10'
   const isComposingRef = useRef(false)
   const imageHintLockedRef = useRef(false)
   const imageHintReleaseRef = useRef<(() => void) | null>(null)
@@ -430,23 +410,22 @@ export default function InputBar() {
   const isMobile = useIsMobile()
 
   const settingsActiveProfile = useMemo(() => getActiveApiProfile(settings), [settings])
-  const currentActiveProfile = useMemo(() => (
-    appMode === 'agent'
-      ? getAgentImageApiProfile(settings) ?? settingsActiveProfile
-      : settingsActiveProfile
-  ), [appMode, settings, settingsActiveProfile])
+  const currentActiveProfile = settingsActiveProfile
   const activeProfile = useMemo(() => {
-    const reusedProfile = appMode !== 'agent' && settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
+    const reusedProfile = settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
       ? settings.profiles.find((profile) => profile.id === reusedTaskApiProfileId)
       : undefined
     return reusedProfile ? resolveApiProfileModel(reusedProfile, reusedTaskApiModel ?? undefined) : currentActiveProfile
-  }, [appMode, currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, settings])
+  }, [currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, settings])
   const isTemporarilyReusedProfile = activeProfile.id !== currentActiveProfile.id
+  const openRouterCatalog = useSyncExternalStore(subscribeOpenRouterImageModels, readCachedOpenRouterImageModels, readCachedOpenRouterImageModels)
   const modelOptions = useMemo(() => (
-    splitModelList(settings.profiles.find((profile) => profile.id === activeProfile.id)?.model ?? activeProfile.model)
+    getEnabledProfileModels(settings.profiles.find((profile) => profile.id === activeProfile.id) ?? activeProfile)
+      .filter((model) => activeProfile.provider !== 'openrouter' || !openRouterCatalog.length || openRouterCatalog.some((item) => item.id === model && item.supportsImageApi))
       .map((model) => ({ label: model, value: model }))
-  ), [activeProfile.id, activeProfile.model, settings.profiles])
+  ), [activeProfile.id, activeProfile.model, activeProfile.provider, openRouterCatalog, settings.profiles])
   const handleModelChange = useCallback((model: string) => {
+    if (!model) return
     // 临时复用其他配置时只切换本次复用的模型，不改动该配置记住的选择
     if (isTemporarilyReusedProfile) {
       setReusedTaskApiModel(model)
@@ -456,49 +435,47 @@ export default function InputBar() {
       profiles: settings.profiles.map((profile) => profile.id === activeProfile.id ? { ...profile, selectedModel: model } : profile),
     })
   }, [activeProfile.id, isTemporarilyReusedProfile, setReusedTaskApiModel, setSettings, settings.profiles])
-  const activeAgentConversation = appMode === 'agent'
-    ? agentConversations.find((conversation) => conversation.id === activeAgentConversationId) ?? null
-    : null
-  const activeAgentIsRunning = Boolean(activeAgentConversation?.rounds.some((round) => round.status === 'running'))
+  const handleGroupedModelChange = useCallback((profileId: string, model: string) => {
+    const next = selectProfileModel(settings, profileId, model)
+    if (!next) return
+    setSettings(next)
+    setReusedTaskApiProfile(null)
+  }, [setReusedTaskApiProfile, setSettings, settings])
   const effectiveSettings = useMemo(() => (
     activeProfile.id === settingsActiveProfile.id
       ? settings
       : normalizeSettings({ ...settings, activeProfileId: activeProfile.id })
   ), [activeProfile.id, settingsActiveProfile.id, settings])
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
-  // 批量进行中暂停画廊和 Agent 的提交，需等待完成或停止后再提交
+  const hasEnabledModel = modelOptions.length > 0 && modelOptions.some((option) => option.value === activeProfile.model)
+  const unsupportedMask = activeProfile.provider === 'openrouter' && Boolean(maskDraft)
+  // 批量进行中暂停提交，需等待完成或停止后再提交
   const batchRunning = Boolean(batchProgress)
-  const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && !activeAgentIsRunning && !batchRunning)
-  const batchEnabled = appMode === 'gallery' && settings.showBatchPrompt && settings.batchPromptEnabled
+  const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && hasEnabledModel && !unsupportedMask && !batchRunning)
+  const batchEnabled = settings.showBatchPrompt && settings.batchPromptEnabled
   // 批量进行中始终在画廊显示入口，以便查看进度和停止
-  const showBatch = appMode === 'gallery' && (settings.showBatchPrompt || batchRunning)
+  const showBatch = settings.showBatchPrompt || batchRunning
   const batchPromptCount = useMemo(() => batchEnabled ? splitBatchPrompts(prompt).length : 0, [batchEnabled, prompt])
-  const submitButtonAriaLabel = activeAgentIsRunning
-    ? '停止生成'
+  const submitButtonAriaLabel = hasSubmitApiConfig && !hasEnabledModel
+    ? '请先启用模型'
+    : unsupportedMask
+    ? 'OpenRouter 不支持遮罩编辑'
     : hasSubmitApiConfig
     ? maskDraft ? '遮罩编辑' : batchEnabled ? `批量生成 ${batchPromptCount} 条` : '生成图像'
     : '请先配置 API'
-  const submitTooltipText = activeAgentIsRunning
-    ? '停止生成'
-    : !hasSubmitApiConfig
+  const submitTooltipText = !hasSubmitApiConfig
     ? '尚未完成 API 配置，请在右上角设置中进行'
-    : appMode === 'agent'
-    ? '画廊批量任务进行中，请等待完成或回到画廊停止后再提交'
+    : !hasEnabledModel
+    ? '请在 API 配置中启用至少一个模型'
+    : unsupportedMask
+    ? 'OpenRouter 不支持遮罩编辑，请移除遮罩或切换 API 配置'
     : '批量任务进行中，请等待完成或停止后再提交'
   const promptPlaceholder = batchEnabled
     ? '每条提示词之间空两行分隔，可输入 @ 来指定参考图...'
     : '描述你想生成的图片，可输入 @ 来指定参考图...'
-  const submitCurrentMode = useCallback(() => {
-    if (appMode === 'agent') {
-      void submitAgentMessage()
-    } else {
-      void submitTask()
-    }
-  }, [appMode])
-  const stopActiveAgentResponse = useCallback(() => {
-    stopAgentResponse(activeAgentConversationId)
-  }, [activeAgentConversationId])
+  const submitCurrentMode = useCallback(() => { void submitTask() }, [])
   const syncPromptFromContentEditable = useCallback(() => {
+    optimizer.cancel()
     const el = textareaRef.current
     if (!el) return
     isUserInputRef.current = true
@@ -506,12 +483,12 @@ export default function InputBar() {
     setCursorPos(range.start)
     syncMentionTagSelection(el)
     setPrompt(getContentEditablePlainText(el))
-  }, [setPrompt])
+  }, [optimizer.cancel, setPrompt])
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
-  const agentAutoImageCount = appMode === 'agent'
+  const agentAutoImageCount = false
   const moderationDisabled = isFalProvider
-  const transparentOutputAvailable = appMode === 'gallery'
+  const transparentOutputAvailable = true
   const showTransparentOutputControl = transparentOutputAvailable && (params.output_format === 'png' || params.output_format === 'webp')
   const transparentOutputEnabled = transparentOutputAvailable && showTransparentOutputControl && params.transparent_output
   const compressionDisabled = params.output_format === 'png' || isFalProvider
@@ -520,9 +497,7 @@ export default function InputBar() {
   const nDraftValue = Number(nInput)
   const effectiveNValue = Number.isNaN(nDraftValue) ? params.n : nDraftValue
   const streamConcurrentByN = activeProfile.provider === 'openai' && activeProfile.streamImages === true && !agentAutoImageCount && effectiveNValue > 1
-  const nLimitHintText = agentAutoImageCount
-    ? 'Agent 模式下数量由模型根据提示词自动决定'
-    : isFalProvider
+  const nLimitHintText = isFalProvider
     ? `fal.ai 最大请求数量为 ${outputImageLimit}`
     : `OpenAI 最大请求数量为 ${outputImageLimit}`
   const displaySize = isFalTextToImage && params.size === 'auto'
@@ -561,23 +536,7 @@ export default function InputBar() {
     : inputImages
   const cursorPosition = cursorPos
   const visiblePrompt = stripImageMentionMarkers(prompt)
-  const agentOutputImageOptions = useMemo<AtImageOption[]>(() => {
-    if (!activeAgentConversation) return []
-    return getActiveAgentRounds(activeAgentConversation).flatMap((round) =>
-      collectAgentRoundOutputImageSlots(round, tasks).flatMap((imageId, imageIndex) => {
-        if (!imageId) return []
-        const label = `@第${round.index}轮图${imageIndex + 1}`
-        return {
-          type: 'agent-output' as const,
-          key: `agent-output:${round.id}:${imageIndex}:${imageId}`,
-          label,
-          imageId,
-          insertText: label,
-        }
-      }),
-    )
-  }, [activeAgentConversation, tasks])
-  const atImageSourceCount = inputImages.length + agentOutputImageOptions.length
+  const atImageSourceCount = inputImages.length
   const atImageQuery = isCursorInSelectedImageMention(prompt, cursorPosition)
     ? null
     : getAtImageQuery(visiblePrompt, cursorPosition, { length: atImageSourceCount })
@@ -593,7 +552,6 @@ export default function InputBar() {
             imageIndex: index,
           } satisfies AtImageOption))
           .filter((option) => imageMentionMatches(atImageQuery.query, option.imageIndex)),
-        ...agentOutputImageOptions.filter((option) => agentImageMentionMatches(atImageQuery.query, option.label)),
       ]
     : []
   const showAtImageMenu = !atImageMenuDismissed && atImageOptions.length > 0
@@ -610,7 +568,7 @@ export default function InputBar() {
     setAtImageMenuIndex(0)
     if (!query) return
 
-    const mentionText = option.type === 'input' ? getImageMentionLabel(option.imageIndex) : option.insertText
+    const mentionText = getImageMentionLabel(option.imageIndex)
     const nextCursor = query.start + mentionText.length
     if (el) {
       el.focus()
@@ -622,9 +580,7 @@ export default function InputBar() {
       }
     }
 
-    const next = option.type === 'input'
-      ? insertImageMentionAtVisibleRange(prompt, query.start, cursor, option.imageIndex)
-      : insertTextMentionAtVisibleRange(prompt, query.start, cursor, option.insertText)
+    const next = insertImageMentionAtVisibleRange(prompt, query.start, cursor, option.imageIndex)
     isUserInputRef.current = false
     setPrompt(next.prompt)
     window.setTimeout(() => {
@@ -1668,13 +1624,35 @@ export default function InputBar() {
     )
   }
 
-  const renderParams = () => (
+  const groupedModelSelector = <GroupedModelSelect settings={settings} activeProfileId={activeProfile.id} activeModel={activeProfile.model} catalog={openRouterCatalog} onChange={handleGroupedModelChange} disabled={batchRunning} />
+
+  const renderParams = (mobile = false) => activeProfile.provider === 'openrouter' ? (mobile !== isMobile ? null : (
+    <OpenRouterParams
+      profile={activeProfile}
+      prompt={prompt}
+      referenceImageCount={inputImages.length}
+      modelOptions={modelOptions}
+      onModelChange={handleModelChange}
+      modelSelector={groupedModelSelector}
+      params={params}
+      setParams={setParams}
+      onOpenSizePicker={() => setShowSizePicker(true)}
+      agentAutoImageCount={agentAutoImageCount}
+      showBatch={showBatch}
+      settings={settings}
+      setSettings={setSettings}
+      batchPromptCount={batchPromptCount}
+      batchProgress={batchProgress}
+      onStopBatch={stopBatchPrompts}
+    />
+  )) : (
     <InputParamsPanel
       params={params}
       setParams={setParams}
       activeProfile={activeProfile}
-      modelOptions={modelOptions}
+      modelOptions={modelOptions.length ? modelOptions : [{ label: '请先启用模型', value: '' }]}
       onModelChange={handleModelChange}
+      modelSelector={groupedModelSelector}
       isFalProvider={isFalProvider}
       isFalTextToImage={isFalTextToImage}
       displaySize={displaySize}
@@ -1823,7 +1801,6 @@ export default function InputBar() {
                     >
                       <AtImageOptionThumb option={option} />
                       <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                      {option.type === 'agent-output' && <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">历史</span>}
                     </button>
                   ))}
                 </div>
@@ -1834,6 +1811,7 @@ export default function InputBar() {
               contentEditable
               suppressContentEditableWarning
               onInput={(e) => {
+                optimizer.cancel()
                 isUserInputRef.current = true
                 const el = e.currentTarget
                 const range = getContentEditableSelection(el)
@@ -1854,6 +1832,7 @@ export default function InputBar() {
               }}
               onKeyDown={handleKeyDown}
               onCompositionStart={() => {
+                optimizer.cancel()
                 isComposingRef.current = true
               }}
               onCompositionEnd={() => {
@@ -1880,35 +1859,34 @@ export default function InputBar() {
                 syncMentionTagSelection(el)
               }}
               aria-label={promptPlaceholder}
-              className={`col-start-1 row-start-1 min-h-[42px] w-full overflow-hidden ios-rounded-scroll-fix whitespace-pre-wrap break-words rounded-2xl border border-gray-200/60 bg-white/50 pl-4 pr-10 py-3 text-sm leading-relaxed shadow-sm outline-none transition-[border-color,box-shadow] duration-200 focus:ring-1 focus:ring-blue-300/40 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-100 dark:focus:ring-blue-500/30${promptExpanded ? ' !h-full !overflow-y-auto' : ''}`}
+              className={`col-start-1 row-start-1 min-h-[42px] w-full overflow-hidden ios-rounded-scroll-fix whitespace-pre-wrap break-words rounded-2xl border border-gray-200/60 bg-white/50 pl-4 ${promptActionPadding} py-3 text-sm leading-relaxed shadow-sm outline-none transition-[border-color,box-shadow] duration-200 focus:ring-1 focus:ring-blue-300/40 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-100 dark:focus:ring-blue-500/30${promptExpanded ? ' !h-full !overflow-y-auto' : ''}`}
             />
             {prompt.length === 0 && (
-              <div className={`prompt-placeholder col-start-1 row-start-1 pointer-events-none pl-4 pr-10 py-3 text-sm leading-relaxed text-gray-400 dark:text-gray-500${
+              <div className={`prompt-placeholder col-start-1 row-start-1 pointer-events-none pl-4 ${promptActionPadding} py-3 text-sm leading-relaxed text-gray-400 dark:text-gray-500${
                 isMobile && mobileCollapsed ? ' truncate' : ''
               }`}>
                 {promptPlaceholder}
               </div>
             )}
-            {prompt.length > 0 && (
-              <div
-                className={`absolute z-10 ${
-                  isSingleLine ? 'right-3 top-1/2 -translate-y-1/2' : 'right-3 top-3'
-                }`}
-                onMouseEnter={() => setClearPromptHover(true)}
-                onMouseLeave={() => setClearPromptHover(false)}
-              >
-                <ButtonTooltip visible={clearPromptHover} text="清空文本" />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setClearPromptHover(false)
-                    handleClearPrompt()
-                  }}
-                  className="flex items-center justify-center rounded-full p-1 text-gray-400 transition-all duration-200 hover:bg-gray-100 hover:text-gray-600 focus:outline-none dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
-                  aria-label="清空文本"
-                >
-                  <CloseIcon className="w-3.5 h-3.5" />
-                </button>
+            {(prompt.length > 0 || optimizer.enabled) && (
+              <div className={`absolute z-10 flex items-center gap-1 ${isSingleLine ? 'right-3 top-1/2 -translate-y-1/2' : 'right-3 top-3'}`}>
+                <PromptOptimizationActions optimizer={optimizer} />
+                {prompt.length > 0 && (
+                  <div className="relative" onMouseEnter={() => setClearPromptHover(true)} onMouseLeave={() => setClearPromptHover(false)}>
+                    <ButtonTooltip visible={clearPromptHover} text="清空文本" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClearPromptHover(false)
+                        handleClearPrompt()
+                      }}
+                      className="flex items-center justify-center rounded-full p-1 text-gray-400 transition-all duration-200 hover:bg-gray-100 hover:text-gray-600 focus:outline-none dark:hover:bg-white/[0.08] dark:hover:text-gray-200"
+                      aria-label="清空文本"
+                    >
+                      <CloseIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {showPromptExpand && (
@@ -1937,6 +1915,7 @@ export default function InputBar() {
 
           {/* 参数 + 按钮 */}
           <div className="mt-3">
+            {(!hasEnabledModel || unsupportedMask) && <p className="mb-2 text-[11px] text-amber-600 dark:text-amber-400" role="status">{!hasEnabledModel ? '请在 API 配置中启用至少一个可用模型' : 'OpenRouter 不支持遮罩编辑，请移除遮罩或切换配置'}</p>}
             {/* 桌面端布局 */}
             <div className="hidden sm:flex items-center justify-between gap-3">
               {renderParams()}
@@ -1948,28 +1927,20 @@ export default function InputBar() {
                   onMouseEnter={() => setSubmitHover(true)}
                   onMouseLeave={() => setSubmitHover(false)}
                 >
-                  <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig || batchRunning) && submitHover} text={submitTooltipText} />
+                  <ButtonTooltip visible={(!hasSubmitApiConfig || !hasEnabledModel || unsupportedMask || batchRunning) && submitHover} text={submitTooltipText} />
                   <button
-                    onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
-                    disabled={activeAgentIsRunning ? false : hasSubmitApiConfig ? !canSubmit : false}
+                    onClick={() => hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
+                    disabled={hasSubmitApiConfig ? !canSubmit : false}
                     className={`p-2.5 rounded-xl transition-all shadow-sm hover:shadow ${
-                      activeAgentIsRunning
-                        ? 'bg-red-500 text-white hover:bg-red-600'
-                        : !hasSubmitApiConfig
+                      !hasSubmitApiConfig
                         ? 'bg-gray-300 dark:bg-white/[0.06] text-white cursor-pointer'
                         : 'bg-blue-500 text-white hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-white/[0.04] disabled:opacity-50 disabled:cursor-not-allowed'
                     }`}
                     aria-label={submitButtonAriaLabel}
                   >
-                    {activeAgentIsRunning ? (
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="7" y="7" width="10" height="10" rx="1.5" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    )}
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -1979,7 +1950,7 @@ export default function InputBar() {
             <div className="sm:hidden flex flex-col gap-2">
               <div className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
                 <div className="collapse-inner">
-                  {renderParams()}
+                  {renderParams(true)}
                   <div className="h-2" />
                 </div>
               </div>
@@ -1991,29 +1962,21 @@ export default function InputBar() {
                   onMouseEnter={() => setSubmitHover(true)}
                   onMouseLeave={() => setSubmitHover(false)}
                 >
-                  <ButtonTooltip visible={(activeAgentIsRunning || !hasSubmitApiConfig || batchRunning) && submitHover} text={submitTooltipText} />
+                  <ButtonTooltip visible={(!hasSubmitApiConfig || !hasEnabledModel || unsupportedMask || batchRunning) && submitHover} text={submitTooltipText} />
                   <button
-                    onClick={() => activeAgentIsRunning ? stopActiveAgentResponse() : hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
-                    disabled={activeAgentIsRunning ? false : hasSubmitApiConfig ? !canSubmit : false}
+                    onClick={() => hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
+                    disabled={hasSubmitApiConfig ? !canSubmit : false}
                     aria-label={submitButtonAriaLabel}
                     className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm ${
-                      activeAgentIsRunning
-                        ? 'bg-red-500 text-white hover:bg-red-600'
-                        : !hasSubmitApiConfig
+                      !hasSubmitApiConfig
                         ? 'bg-gray-300 dark:bg-white/[0.06] text-white cursor-pointer'
                         : 'bg-blue-500 text-white hover:bg-blue-600 disabled:bg-gray-300 dark:disabled:bg-white/[0.04] disabled:opacity-50 disabled:cursor-not-allowed'
                     }`}
                   >
-                    {activeAgentIsRunning ? (
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="7" y="7" width="10" height="10" rx="1.5" />
-                      </svg>
-                    ) : (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    )}
-                    {activeAgentIsRunning ? '停止生成' : maskDraft ? '遮罩编辑' : batchEnabled ? `批量生成 ${batchPromptCount} 条` : '生成图像'}
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                    </svg>
+                    {maskDraft ? '遮罩编辑' : batchEnabled ? `批量生成 ${batchPromptCount} 条` : '生成图像'}
                   </button>
                 </div>
               </div>

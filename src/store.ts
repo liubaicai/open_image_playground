@@ -1,3 +1,6 @@
+// 保留 Agent 归档兼容代码，但关闭所有运行入口。
+const isAgentExecutionEnabled = () => false
+import { reconcilePromptOptimizationConfig } from './extensions/promptOptimization/settings'
 import type { ReactNode } from 'react'
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
@@ -72,7 +75,7 @@ import { canonicalizeBatchFunctionCallArguments, countResponseToolCalls, createR
 import { cleanStaleAgentInputDrafts, clearInputDraftState, isEmptyAgentInputDraft, normalizeAgentInputDrafts, remapAgentInputDraftMentionsForPathChange, restoreAgentInputDraftState, restoreGalleryInputDraftState, saveActiveAgentInputDrafts, saveGalleryInputDraft, syncActiveInputDraft, updateInputDraftImages } from './lib/inputDraftState'
 import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefaultFavoriteCollection, deleteFavoriteCollectionState, ensureDefaultFavoriteCollection, getTaskFavoriteCollectionIds, mergeFavoriteCollections, normalizeFavoriteCollectionIds, normalizeFavoriteCollectionName, normalizeFavoriteCollections, normalizeFavoritePatch, normalizeLoadedFavoriteState, resolveDefaultFavoriteCollectionId, sameFavoriteCollectionIds } from './lib/favoriteState'
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
-import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
+import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markArchivedAgentTasks, markInterruptedOpenAIRunningTasks } from './lib/taskState'
 import { stripInjectedCodexCliSizePrompt } from './lib/size'
 import { apiFetch, FetchConnectError, isTauri } from './lib/platform'
 import { pickSaveDir, saveFile, saveFileToDir, type SaveOptions } from './lib/saveFile'
@@ -122,7 +125,7 @@ function isErrorToastTitle(title: string): boolean {
   return /(?:失败|错误|异常|报错|无法|不能|超时|中断|断开|请先|请输入|已达上限|不存在|已丢失)$/.test(title)
 }
 
-export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about'
+export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about' | 'promptOptimization'
 
 const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，并提高「请求中间步骤图像数」来维持连接。'
 const TIMEOUT_PARTIAL_IMAGES_ZERO_HINT = '官方流式接口不发送心跳，当前「请求中间步骤图像数」为 0，连接可能因无数据传输而断开。建议提高到 2 或 3。'
@@ -532,78 +535,16 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       // Mode
       appMode: 'gallery',
-      setAppMode: (appMode) => {
-        if (appMode === 'gallery') {
-          const state = get()
-          const agentInputDrafts = saveActiveAgentInputDrafts(state)
-          const galleryInputDraft = saveGalleryInputDraft(state)
-          set((state) => ({
-            appMode,
-            agentInputDrafts,
-            galleryInputDraft,
-            agentMobileHeaderVisible: true,
-            selectedTaskIds: [],
-            selectedFavoriteCollectionIds: [],
-            agentEditingRoundId: null,
-            ...(state.appMode === 'agent' ? restoreGalleryInputDraftState(galleryInputDraft) : {}),
-          }))
-          return
-        }
-
+      setAppMode: () => {
         const state = get()
-        const settings = normalizeSettings(state.settings)
-        const activeProfile = getActiveApiProfile(settings)
-        const agentValidationError = getAgentProfileValidationError(settings)
-
-        if (!agentValidationError) {
-          const galleryInputDraft = saveGalleryInputDraft(state)
-          set((state) => ({
-            appMode: 'agent',
-            galleryInputDraft,
-            agentMobileHeaderVisible: false,
-            agentSidebarCollapsed: true,
-            agentAssetPanelCollapsed: true,
-            selectedTaskIds: [],
-            selectedFavoriteCollectionIds: [],
-            ...restoreAgentInputDraftState(state.agentInputDrafts, state.activeAgentConversationId),
-          }))
-          return
-        }
-
-        if (settings.agentApiConfigMode === 'off' && activeProfile.provider === 'openai' && activeProfile.apiMode !== 'responses') {
-          state.setConfirmDialog({
-            title: '需要 Responses API 配置',
-            message: `当前配置「${activeProfile.name}」使用的是 Images API，仅支持生成图片，无 Agent 模式需要的对话能力。\n\n请前往 API 配置页，将当前配置调整为 Responses API，或切换/新建一个支持 Responses API 的配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'api')
-            },
-          })
-          return
-        }
-
-        if (settings.agentApiConfigMode !== 'off') {
-          state.setConfirmDialog({
-            title: 'Agent API 配置不完整',
-            message: `${agentValidationError.message}\n\n请前往 Agent 配置页，选择或新建可用配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'agent')
-            },
-          })
-          return
-        }
-
-        state.setConfirmDialog({
-          title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
-          confirmText: '去设置',
-          cancelText: '取消',
-          action: () => {
-            useStore.getState().setShowSettings(true, 'api')
-          },
+        const galleryInputDraft = saveGalleryInputDraft(state)
+        set({
+          appMode: 'gallery',
+          agentInputDrafts: saveActiveAgentInputDrafts(state),
+          galleryInputDraft,
+          agentMobileHeaderVisible: true,
+          agentEditingRoundId: null,
+          ...(state.appMode === 'agent' ? restoreGalleryInputDraftState(galleryInputDraft) : {}),
         })
       },
 
@@ -666,6 +607,7 @@ export const useStore = create<AppState>()(
         const settings = normalizeSettings(enforcePresetConfigPolicy(merged, {
           dismissedPresetProviderIds: effectiveDismissedPresetProviderIds,
         }))
+        settings.promptOptimization = reconcilePromptOptimizationConfig(settings.promptOptimization, previous.profiles, settings.profiles)
         const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
         return {
           settings,
@@ -697,6 +639,7 @@ export const useStore = create<AppState>()(
             normalizeSettings(transform?.(merged.settings) ?? merged.settings),
             { dismissedPresetProviderIds: effectiveDismissedPresetProviderIds },
           ))
+          settings.promptOptimization = reconcilePromptOptimizationConfig(settings.promptOptimization, state.settings.profiles, settings.profiles)
           const shouldClearReusedProfile = state.reusedTaskApiProfileId && settings.activeProfileId === state.reusedTaskApiProfileId
           return {
             settings,
@@ -1373,7 +1316,7 @@ function clearFalRecoveryTimer(taskId: string) {
 
 function scheduleFalRecovery(taskId: string, delayMs = FAL_RECOVERY_POLL_MS) {
   if (falRecoveryTimers.has(taskId)) return
-  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId && !isAgentTask(task))) return
   const timer = setTimeout(() => {
     falRecoveryTimers.delete(taskId)
     recoverFalTask(taskId)
@@ -1389,7 +1332,7 @@ function clearCustomRecoveryTimer(taskId: string) {
 
 function scheduleCustomRecovery(taskId: string, delayMs = CUSTOM_RECOVERY_POLL_MS) {
   if (customRecoveryTimers.has(taskId)) return
-  if (!useStore.getState().tasks.some((task) => task.id === taskId)) return
+  if (!useStore.getState().tasks.some((task) => task.id === taskId && !isAgentTask(task))) return
   const timer = setTimeout(() => {
     customRecoveryTimers.delete(taskId)
     recoverCustomTask(taskId)
@@ -1478,7 +1421,7 @@ async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<Return
 async function recoverFalTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
-  if (!task || task.apiProvider !== 'fal' || !task.falRequestId || !task.falEndpoint || task.status === 'done') return
+  if (!task || isAgentTask(task) || task.apiProvider !== 'fal' || !task.falRequestId || !task.falEndpoint || task.status === 'done') return
 
   const profile = getFalRecoveryProfile(settings, task)
   if (!profile) {
@@ -1523,16 +1466,12 @@ export async function initStore() {
     : loadedAgentConversations[0]?.id ?? null
   if (loadedAgentConversations.length > 0 || legacyAgentConversations.length > 0) {
     useStore.setState((state) => {
-      const agentInputDrafts = cleanStaleAgentInputDrafts(
-        normalizeAgentInputDrafts(state.agentInputDrafts, loadedAgentConversations),
-        activeAgentConversationId,
-      )
+      const agentInputDrafts = state.agentInputDrafts
       return {
         agentConversations: loadedAgentConversations,
         agentConversationsLoaded: true,
         activeAgentConversationId,
         agentInputDrafts,
-        ...(state.appMode === 'agent' ? restoreAgentInputDraftState(agentInputDrafts, activeAgentConversationId) : {}),
       }
     })
     await replaceStoredAgentConversations(loadedAgentConversations)
@@ -1548,8 +1487,10 @@ export async function initStore() {
   if (shouldRewritePersistedLocalState) {
     useStore.setState({})
   }
-  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(storedTasks, Date.now())
-  const interruptedTaskIds = new Set(interruptedTasks.map((task) => task.id))
+  const now = Date.now()
+  const { tasks: archivedState, archivedTasks } = markArchivedAgentTasks(storedTasks, now)
+  const { tasks: markedTasks, interruptedTasks } = markInterruptedOpenAIRunningTasks(archivedState, now)
+  const interruptedTaskIds = new Set([...archivedTasks, ...interruptedTasks].map((task) => task.id))
   const favoriteState = useStore.getState()
   const normalizedFavorites = normalizeLoadedFavoriteState(markedTasks.map(getPersistableTask), favoriteState.favoriteCollections, favoriteState.defaultFavoriteCollectionId)
   const tasks = normalizedFavorites.tasks
@@ -1566,6 +1507,7 @@ export async function initStore() {
   showSupportPromptForExistingLocalData(tasks)
   // 客户端关闭确认用同样的判断跳过这些任务，它们重启后会继续查询结果
   for (const task of tasks) {
+    if (isAgentTask(task)) continue
     if (isFalRecoverableTask(task)) scheduleFalRecovery(task.id, 0)
     if (isCustomRecoverableTask(task)) scheduleCustomRecovery(task.id, 0)
   }
@@ -1575,20 +1517,11 @@ export async function initStore() {
   const state = useStore.getState()
   const persistedInputImages = state.inputImages
   const galleryInputDraft = state.galleryInputDraft
-  const agentConversations = state.agentConversations
-  const agentInputDrafts = state.agentInputDrafts
   for (const img of persistedInputImages) referencedIds.add(img.id)
   if (galleryInputDraft) {
     for (const img of galleryInputDraft.inputImages) referencedIds.add(img.id)
   }
-  for (const draft of Object.values(agentInputDrafts)) {
-    for (const img of draft.inputImages) referencedIds.add(img.id)
-  }
-  for (const conversation of agentConversations) {
-    for (const round of conversation.rounds) {
-      for (const id of round.inputImageIds) referencedIds.add(id)
-    }
-  }
+  addAgentReferencedImageIds(referencedIds)
   for (const t of tasks) {
     addTaskReferencedImageIds(referencedIds, t)
   }
@@ -1659,46 +1592,7 @@ export async function initStore() {
     }
   }
 
-  const restoredAgentInputDrafts: Record<string, AgentInputDraft> = {}
-  let agentDraftsChanged = false
-  for (const [conversationId, draft] of Object.entries(agentInputDrafts)) {
-    const restoredDraftImages: InputImage[] = []
-    for (const img of draft.inputImages) {
-      if (img.dataUrl) {
-        restoredDraftImages.push(img)
-        cacheImage(img.id, img.dataUrl)
-        continue
-      }
-      const storedImage = await getImage(img.id)
-      if (storedImage?.dataUrl) {
-        restoredDraftImages.push({ ...img, dataUrl: storedImage.dataUrl })
-        cacheImage(img.id, storedImage.dataUrl)
-      }
-    }
 
-    const restoredDraft: AgentInputDraft = {
-      ...draft,
-      ...updateInputDraftImages(draft, restoredDraftImages),
-    }
-    const shouldClearMask = draft.maskDraft !== restoredDraft.maskDraft
-    if (!isEmptyAgentInputDraft(restoredDraft)) restoredAgentInputDrafts[conversationId] = restoredDraft
-    if (
-      restoredDraftImages.length !== draft.inputImages.length ||
-      restoredDraftImages.some((img, index) => img.dataUrl !== draft.inputImages[index]?.dataUrl) ||
-      shouldClearMask
-    ) {
-      agentDraftsChanged = true
-    }
-  }
-  if (agentDraftsChanged) {
-    const latestState = useStore.getState()
-    useStore.setState({
-      agentInputDrafts: restoredAgentInputDrafts,
-      ...(latestState.appMode === 'agent'
-        ? restoreAgentInputDraftState(restoredAgentInputDrafts, latestState.activeAgentConversationId)
-        : {}),
-    })
-  }
 }
 
 /** 提交新任务 */
@@ -2150,14 +2044,19 @@ function addAgentReferencedImageIds(target: Set<string>, conversations = useStor
   for (const conversation of conversations) {
     for (const round of conversation.rounds) {
       for (const id of round.inputImageIds) target.add(id)
+      if (round.maskTargetImageId) target.add(round.maskTargetImageId)
       if (round.maskImageId) target.add(round.maskImageId)
     }
     for (const message of conversation.messages) {
+      for (const id of message.inputImageIds ?? []) target.add(id)
+      if (message.maskTargetImageId) target.add(message.maskTargetImageId)
       if (message.maskImageId) target.add(message.maskImageId)
     }
   }
   for (const draft of Object.values(inputDrafts)) {
     for (const img of draft.inputImages) target.add(img.id)
+    if (draft.maskDraft?.targetImageId) target.add(draft.maskDraft.targetImageId)
+    if (draft.maskEditorImageId) target.add(draft.maskEditorImageId)
   }
 }
 
@@ -2367,6 +2266,7 @@ function appendAgentRecoveredToolOutputs(conversationId: string, roundId: string
 }
 
 async function continueRecoveredAgentRound(taskId: string) {
+  if (!isAgentExecutionEnabled()) return
   const state = useStore.getState()
   const task = state.tasks.find((item) => item.id === taskId)
   if (!task?.agentConversationId || !task.agentRoundId) return
@@ -2457,6 +2357,7 @@ async function continueRecoveredAgentRound(taskId: string) {
 }
 
 export async function submitAgentMessage() {
+  if (!isAgentExecutionEnabled()) return
   const state = useStore.getState()
   const { settings, prompt, inputImages, maskDraft, params, showToast } = state
   if (state.batchProgress) {
@@ -2611,6 +2512,7 @@ export async function submitAgentMessage() {
 }
 
 export async function regenerateAgentAssistantMessage(conversationId: string, roundId: string) {
+  if (!isAgentExecutionEnabled()) return
   const state = useStore.getState()
   const { settings, params, showToast } = state
   const normalizedSettings = normalizeSettings(settings)
@@ -2728,6 +2630,7 @@ async function executeAgentRound(
   imageProfile: ApiProfile,
   resume?: { responseOutput: ResponsesOutputItem[]; recoveredTaskIds: string[]; toolCallsUsed: number },
 ) {
+  if (!isAgentExecutionEnabled()) return
   const startedAt = Date.now()
   const controller = new AbortController()
   const controllerKey = getAgentRoundControllerKey(conversationId, roundId)
@@ -3685,7 +3588,7 @@ async function executeAgentRound(
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
-  if (!task) return
+  if (!task || isAgentTask(task)) return
   const execution = Symbol(taskId)
   taskExecutions.set(taskId, execution)
   const taskProfile = getTaskApiProfile(settings, task)
@@ -4504,7 +4407,7 @@ async function completeRecoveredCustomTask(task: TaskRecord, result: Awaited<Ret
 async function recoverCustomTask(taskId: string) {
   const { settings, tasks } = useStore.getState()
   const task = tasks.find((item) => item.id === taskId)
-  if (!task || !task.customTaskId || task.status === 'done') return
+  if (!task || isAgentTask(task) || !task.customTaskId || task.status === 'done') return
 
   const profile = getCustomRecoveryProfile(settings, task)
   const customProvider = profile ? getCustomProviderDefinition(settings, profile.provider) : null
@@ -4597,7 +4500,7 @@ export async function exportData(options: ExportOptions = { exportConfig: true, 
         backupPart: plan.length > 1 ? { id: backupId, index: partNumber, total: plan.length } : undefined,
       })
       const suffix = plan.length > 1 ? `_${String(plan.length).padStart(2, '0')}parts_part${String(partNumber).padStart(2, '0')}` : ''
-      const fileName = `gpt-image-playground-backup_${formatExportFileTime(new Date(exportedAt))}${suffix}.zip`
+      const fileName = `open-image-playground-backup_${formatExportFileTime(new Date(exportedAt))}${suffix}.zip`
       throwIfAborted(signal)
       updateDataProgress(`保存文件${partLabel}`)
       const saveOpts: SaveOptions = { signal, onProgress: (written, total) => updateDataProgress(`保存文件${partLabel}`, written, total, 'byte') }
@@ -4743,9 +4646,10 @@ export async function importData(input: File | File[], options: ImportOptions = 
       }
 
       updateDataProgress('写入任务和会话')
-      for (const task of importedTasks) {
-        // startedAt 来自导入文件，非法值会让计时和“重试于”显示异常
-        await putTask(Number.isFinite(task.startedAt) || task.startedAt === undefined ? task : { ...task, startedAt: undefined })
+      // startedAt 来自导入文件，非法值会让计时和“重试于”显示异常。
+      const normalizedTasks = importedTasks.map((task) => Number.isFinite(task.startedAt) || task.startedAt === undefined ? task : { ...task, startedAt: undefined })
+      for (const task of markArchivedAgentTasks(normalizedTasks, Date.now()).tasks) {
+        await putTask(task)
       }
 
       const tasks = await getAllTasks()

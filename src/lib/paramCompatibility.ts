@@ -18,6 +18,8 @@ export function normalizeParamsForSettings(
 ): TaskParams {
   const activeProfile = getActiveApiProfile(settings)
   const outputImageLimit = getOutputImageLimitForSettings(settings)
+  // OpenRouter 的参数契约由扩展能力目录校验，不套用 GPT Image 的画质/尺寸规则。
+  if (activeProfile.provider === 'openrouter') return { ...params, n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)) }
   const nextParams: TaskParams = {
     ...params,
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,

@@ -1,3 +1,5 @@
+import type { PromptOptimizationConfig } from './extensions/promptOptimization/types'
+
 // ===== 设置 =====
 
 export type ApiMode = 'images' | 'responses'
@@ -15,7 +17,7 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 ] as const
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
-export type BuiltInApiProvider = 'openai' | 'sb2api-async' | 'fal'
+export type BuiltInApiProvider = 'openai' | 'sb2api-async' | 'fal' | 'openrouter'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
@@ -84,6 +86,8 @@ export interface ApiProfile {
   model: string
   /** 首页选中的模型；不在列表中时回退到第一个 */
   selectedModel?: string
+  /** 缺省启用旧版全部模型；空数组表示全部停用 */
+  enabledModels?: string[]
   imageGenerationModel?: string
   timeout: number
   apiMode: ApiMode
@@ -94,7 +98,7 @@ export interface ApiProfile {
   streamImages?: boolean
   streamPartialImages?: number
   transparentBackgroundMethod: 'api' | 'local'
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'imageGenerationModel' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'selectedModel' | 'enabledModels' | 'imageGenerationModel' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
 }
 
 export interface PresetAgentConfig {
@@ -138,6 +142,7 @@ export interface BatchProgress {
 export type BatchPromptMode = 'queue' | 'concurrent'
 
 export interface AppSettings {
+  promptOptimization?: PromptOptimizationConfig
   /** 旧版单配置字段：保留用于导入/查询参数兼容，实际请求以 active profile 为准 */
   baseUrl: string
   apiKey: string

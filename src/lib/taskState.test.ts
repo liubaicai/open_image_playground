@@ -10,6 +10,7 @@ import {
   firstActualParams,
   mapActualParamsByImage,
   mapRevisedPromptsByImage,
+  markArchivedAgentTasks,
   markInterruptedOpenAIRunningTasks,
 } from './taskState'
 
@@ -82,6 +83,45 @@ describe('task lifecycle patches', () => {
     expect(result.tasks.find((item) => item.id === 'custom-running')).toEqual(customAsyncRunning)
     expect(result.tasks.find((item) => item.id === 'custom-sync-running')).toMatchObject({ status: 'error', error: '请求中断' })
     expect(result.tasks.find((item) => item.id === 'done-task')).toEqual(doneTask)
+  })
+})
+
+describe('archived Agent tasks', () => {
+  it.each([
+    { sourceMode: 'agent' as const },
+    { agentConversationId: 'conversation-a' },
+    { agentRoundId: 'round-a' },
+  ])('archives running and recoverable tasks identified by %j without removing history', (source) => {
+    const running = task({
+      ...source, status: 'running', finishedAt: null, elapsed: null, createdAt: 100,
+      falRequestId: 'request-a', falEndpoint: 'fal-ai/model', customTaskId: 'custom-a',
+      falRecoverable: true, customRecoverable: true, prompt: '保留历史提示词',
+      inputImageIds: ['input-a'], outputImages: ['output-a'], rawResponsePayload: '{"historical":true}',
+    })
+    const result = markArchivedAgentTasks([running], 1000)
+    expect(result.archivedTasks).toHaveLength(1)
+    expect(result.tasks[0]).toMatchObject({
+      ...running, status: 'error', error: 'Agent 模式已停用，旧任务已归档。',
+      falRecoverable: false, customRecoverable: false, finishedAt: 1000, elapsed: 900,
+    })
+    expect(running.status).toBe('running')
+    expect(markArchivedAgentTasks(result.tasks, 2000).archivedTasks).toEqual([])
+  })
+
+  it('retains previous errors and never interrupts gallery recovery or completed history', () => {
+    const error = task({ sourceMode: 'agent', status: 'error', customRecoverable: true, error: '旧错误' })
+    const gallery = task({ status: 'running', apiProvider: 'fal', falRecoverable: true })
+    const done = task({ sourceMode: 'agent', outputImages: ['output-a'] })
+    const result = markArchivedAgentTasks([error, gallery, done], 1000)
+    expect(result.tasks[0].error).toBe('Agent 模式已停用，旧任务已归档。\n旧错误')
+    expect(result.tasks[1]).toBe(gallery)
+    expect(result.tasks[2]).toBe(done)
+  })
+
+  it('clears stale recovery flags on completed Agent tasks without relabeling successful output', () => {
+    const done = task({ sourceMode: 'agent', falRecoverable: true, customRecoverable: true, outputImages: ['output-a'] })
+    const result = markArchivedAgentTasks([done], 1000)
+    expect(result.tasks[0]).toEqual({ ...done, falRecoverable: false, customRecoverable: false })
   })
 })
 
