@@ -227,7 +227,7 @@ describe('data operation locking', () => {
         createdAt: 1,
         finishedAt: null,
       }],
-    })])).toBe(true)
+    })])).toBe(false)
     expect(hasActiveDataOperations([task()], [])).toBe(false)
   })
 
@@ -250,7 +250,7 @@ describe('data operation locking', () => {
         createdAt: 1,
         finishedAt: null,
       }],
-    })], null)).toBe(true)
+    })], null)).toBe(false)
 
     let release = () => {}
     const transfer = trackDataTransfer(() => new Promise<void>((resolve) => { release = resolve }))
@@ -946,7 +946,7 @@ describe('input persistence setting', () => {
     expect(persisted.inputImages).toEqual([{ id: imageA.id, dataUrl: '' }])
   })
 
-  it('omits input when restart input restore is disabled', () => {
+  it('omits new input when restart restore is disabled while keeping archived Agent drafts', () => {
     const conversation = agentConversation()
     useStore.setState({
       settings: { ...DEFAULT_SETTINGS, persistInputOnRestart: false },
@@ -963,7 +963,7 @@ describe('input persistence setting', () => {
       activeAgentConversationId: conversation.id,
       agentInputDrafts: {
         [conversation.id]: {
-          prompt: '不应持久化的 Agent 草稿',
+          prompt: '已归档的 Agent 草稿',
           inputImages: [imageA],
           maskDraft: null,
           maskEditorImageId: null,
@@ -976,7 +976,8 @@ describe('input persistence setting', () => {
     expect(persisted).not.toHaveProperty('prompt')
     expect(persisted).not.toHaveProperty('inputImages')
     expect(persisted.galleryInputDraft).toBeNull()
-    expect(persisted.agentInputDrafts).toEqual({})
+    expect(persisted.appMode).toBe('gallery')
+    expect(persisted.agentInputDrafts[conversation.id]).toMatchObject({ prompt: '已归档的 Agent 草稿', inputImages: [{ id: imageA.id, dataUrl: '' }] })
   })
 
   it('writes empty input when persisted input is cleared', () => {
@@ -1234,7 +1235,7 @@ describe('agent conversation persistence', () => {
     expect(stored.map((conversation) => conversation.id)).toEqual(['legacy-conversation', 'early-conversation'])
   })
 
-  it('restores active conversation and draft when localStorage no longer stores conversations', async () => {
+  it('preserves archived conversation and draft without restoring Agent input', async () => {
     const storedConversation = agentConversation({ id: 'stored-conversation', createdAt: 1, updatedAt: 1 })
     useStore.setState({
       appMode: 'agent',
@@ -1262,10 +1263,10 @@ describe('agent conversation persistence', () => {
     expect(state.agentConversations.map((conversation) => conversation.id)).toEqual(['stored-conversation'])
     expect(state.activeAgentConversationId).toBe('stored-conversation')
     expect(state.agentInputDrafts['stored-conversation']?.prompt).toBe('未发送草稿')
-    expect(state.prompt).toBe('未发送草稿')
+    expect(state.prompt).toBe('')
   })
 
-  it('clears masks and renumbers mentions when startup cannot restore a draft image', async () => {
+  it('does not hydrate or rewrite archived Agent image references and masks on startup', async () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
@@ -1304,18 +1305,65 @@ describe('agent conversation persistence', () => {
     await initStore()
 
     const state = useStore.getState()
-    const expectedPrompt = `保留 ${getSelectedImageMentionLabel(0)}，缺失 @已移除图片`
+    const expectedPrompt = `保留 ${getSelectedImageMentionLabel(1)}，缺失 ${getSelectedImageMentionLabel(0)}`
     expect(state.agentInputDrafts[conversation.id]).toMatchObject({
       prompt: expectedPrompt,
-      inputImages: [imageB],
-      maskDraft: null,
-      maskEditorImageId: null,
+      inputImages: [{ id: imageA.id, dataUrl: '' }, { id: imageB.id, dataUrl: '' }],
+      maskDraft: { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: imageA.id,
       updatedAt: 2,
     })
-    expect(state.prompt).toBe(expectedPrompt)
-    expect(state.inputImages).toEqual([imageB])
+    expect(state.prompt).toBe('')
+    expect(state.inputImages).toEqual([])
     expect(state.maskDraft).toBeNull()
     expect(state.maskEditorImageId).toBeNull()
+  })
+
+  it('preserves archived Agent assets and persists stopped recovery records during startup', async () => {
+    await clearTasks()
+    await clearImages()
+    const ids = ['round-input', 'round-mask', 'round-target', 'message-input', 'message-mask', 'message-target', 'draft-input', 'draft-target', 'draft-editor', 'task-output']
+    for (const id of ids) await putImage({ ...imageA, id })
+    const conversation = agentConversation({
+      id: 'archived-assets', activeRoundId: 'round-a',
+      rounds: [{
+        id: 'round-a', index: 1, parentRoundId: null, userMessageId: 'user-a', prompt: '旧提示词',
+        inputImageIds: ['round-input'], maskTargetImageId: 'round-target', maskImageId: 'round-mask',
+        outputTaskIds: ['archived-task'], status: 'done', error: null, createdAt: 1, finishedAt: 2,
+      }],
+      messages: [{
+        id: 'user-a', role: 'user', roundId: 'round-a', content: '保留旧对话', createdAt: 1,
+        inputImageIds: ['message-input'], maskTargetImageId: 'message-target', maskImageId: 'message-mask',
+      }],
+    })
+    await putAgentConversation(conversation)
+    await putDbTask(task({
+      id: 'archived-task', sourceMode: 'agent', agentConversationId: conversation.id,
+      apiProvider: 'fal', falRequestId: 'old-request', falEndpoint: 'fal-ai/model', falRecoverable: true,
+      customTaskId: 'old-custom-task', customRecoverable: true,
+      status: 'running', outputImages: ['task-output'], finishedAt: null, elapsed: null,
+    }))
+    const archivedDraft = {
+      prompt: '保留旧草稿', inputImages: [{ id: 'draft-input', dataUrl: '' }],
+      maskDraft: { targetImageId: 'draft-target', maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 },
+      maskEditorImageId: 'draft-editor', updatedAt: 1,
+    }
+    useStore.setState({
+      settings: { ...DEFAULT_SETTINGS }, appMode: 'gallery', tasks: [], agentConversations: [conversation],
+      activeAgentConversationId: conversation.id, agentInputDrafts: { [conversation.id]: archivedDraft },
+      galleryInputDraft: null, prompt: '', inputImages: [], maskDraft: null, maskEditorImageId: null,
+    })
+
+    await initStore()
+
+    const archived = (await getAllTasks()).find((item) => item.id === 'archived-task')!
+    expect(archived).toMatchObject({
+      status: 'error', error: 'Agent 模式已停用，旧任务已归档。', falRecoverable: false, customRecoverable: false,
+      outputImages: ['task-output'], falRequestId: 'old-request', customTaskId: 'old-custom-task',
+    })
+    expect(useStore.getState().agentInputDrafts[conversation.id]).toEqual(archivedDraft)
+    expect((await getAllAgentConversations())[0].messages[0].content).toBe('保留旧对话')
+    for (const id of ids) expect(await getImage(id)).toMatchObject({ id })
   })
 
   it('clears gallery masks and renumbers mentions when startup cannot restore a draft image', async () => {
@@ -1439,494 +1487,6 @@ describe('fal task recovery', () => {
     const originalImage = await getImage(recovered!.transparentOriginalImages![0])
     expect(outputImage?.dataUrl).toBe('transparent:data:image/png;base64,fal-recovered')
     expect(originalImage?.dataUrl).toBe('data:image/png;base64,fal-recovered')
-  })
-
-  it('deletes a normalized error round with an in-flight recoverable task without reviving it', async () => {
-    const agentTask = task({
-      id: 'agent-restart-task',
-      apiProvider: 'fal',
-      apiProfileId: 'fal-profile',
-      apiProfileName: 'fal',
-      apiModel: 'fal-model',
-      status: 'error',
-      error: '等待自动恢复',
-      falRequestId: 'restart-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-    })
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '重启恢复',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '重启恢复', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    const recovery = deferred<Awaited<ReturnType<typeof getFalQueuedImageResult>>>()
-    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => recovery.promise)
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => expect(getFalQueuedImageResult).toHaveBeenCalledTimes(1))
-    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({
-      status: 'error',
-      error: '上次请求已中断',
-    })
-
-    const result = await useStore.getState().deleteAgentRound('conversation-a', 'round-a')
-
-    expect(result).toBe('deleted')
-    expect(useStore.getState().tasks).toEqual([])
-    expect(useStore.getState().agentConversations[0].rounds).toEqual([])
-    expect(useStore.getState().agentConversations[0].messages).toEqual([])
-
-    recovery.resolve({
-      images: ['data:image/png;base64,late-recovery'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    await recovery.promise
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(useStore.getState().tasks).toEqual([])
-    expect(useStore.getState().agentConversations[0].rounds).toEqual([])
-    expect(useStore.getState().agentConversations[0].messages).toEqual([])
-    expect(await getAllImageIds()).toEqual([])
-  })
-
-  it('continues an Agent round after all fal image tasks recover', async () => {
-    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
-    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    const agentTask = task({
-      id: 'agent-fal-task',
-      prompt: '画一只猫',
-      apiProvider: 'fal',
-      apiProfileId: imageProfile.id,
-      apiProfileName: imageProfile.name,
-      apiModel: imageProfile.model,
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-      finishedAt: Date.now(),
-      elapsed: 10,
-    })
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValue({
-      images: ['data:image/png;base64,agent-recovered'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    const continuation = deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>()
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(() => continuation.promise)
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      tasks: [],
-      agentConversations: [],
-      activeAgentConversationId: conversation.id,
-      showToast: vi.fn(),
-    })
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'running', error: null })
-    expect(await useStore.getState().deleteAgentRound(conversation.id, 'round-a')).toBe('running')
-    continuation.resolve({
-      text: '已完成。',
-      images: [],
-      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已完成。' }] }],
-      responseId: 'response-done',
-    })
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
-
-    const recoveredTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
-    expect(recoveredTask).toMatchObject({ status: 'done', falRecoverable: false })
-    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
-    const agentInputJson = JSON.stringify(vi.mocked(callAgentResponsesApi).mock.calls[0][0].input)
-    expect(agentInputJson).toContain('function_call_output')
-    expect(agentInputJson).toContain('\\"status\\":\\"done\\"')
-    const round = useStore.getState().agentConversations[0].rounds[0]
-    expect(round).toMatchObject({ status: 'done', error: null, responseId: 'response-done' })
-    expect(round.responseOutput).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'function_call_output', call_id: 'tool-a' }),
-    ]))
-  })
-
-  it('records recovered Agent tool failures without continuing the Agent round', async () => {
-    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
-    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    const agentTask = task({
-      id: 'agent-fal-task',
-      prompt: '画一只猫',
-      apiProvider: 'fal',
-      apiProfileId: imageProfile.id,
-      apiProfileName: imageProfile.name,
-      apiModel: imageProfile.model,
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-      finishedAt: Date.now(),
-      elapsed: 10,
-    })
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      tasks: [],
-      agentConversations: [],
-      activeAgentConversationId: 'conversation-a',
-      showToast: vi.fn(),
-    })
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => {
-      expect(useStore.getState().agentConversations[0]?.rounds[0]).toMatchObject({ status: 'error', error: 'quota exceeded' })
-    })
-
-    expect(callAgentResponsesApi).not.toHaveBeenCalled()
-    const failedTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
-    expect(failedTask).toMatchObject({ status: 'error', error: 'quota exceeded', falRecoverable: false })
-    const round = useStore.getState().agentConversations[0].rounds[0]
-    expect(round).toMatchObject({ status: 'error', error: 'quota exceeded' })
-    const toolOutput = round.responseOutput?.find((item) => item.type === 'function_call_output')
-    expect(toolOutput).toMatchObject({ call_id: 'tool-a' })
-    expect(toolOutput?.output).toContain('"status":"error"')
-    expect(toolOutput?.output).toContain('quota exceeded')
-  })
-
-  it('does not call Agent again when recovered tasks already reached the tool limit', async () => {
-    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
-    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    const agentTask = task({
-      id: 'agent-fal-task',
-      prompt: '画一只猫',
-      apiProvider: 'fal',
-      apiProfileId: imageProfile.id,
-      apiProfileName: imageProfile.name,
-      apiModel: imageProfile.model,
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'limit-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-      finishedAt: Date.now(),
-      elapsed: 10,
-    })
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
-      images: ['data:image/png;base64,agent-recovered-limit'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-        agentMaxToolRounds: 1,
-      }),
-      tasks: [],
-      agentConversations: [],
-      activeAgentConversationId: conversation.id,
-      showToast: vi.fn(),
-    })
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
-
-    expect(callAgentResponsesApi).not.toHaveBeenCalled()
-    const round = useStore.getState().agentConversations[0].rounds[0]
-    expect(round).toMatchObject({ status: 'done', error: null })
-    expect(useStore.getState().agentConversations[0].messages.find((message) => message.id === 'assistant-a')?.content).toContain('已达到最大工具调用次数（1）')
-  })
-
-  it('does not continue a stopped Agent round when a recoverable fal task later completes', async () => {
-    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
-    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    const agentTask = task({
-      id: 'agent-fal-task',
-      prompt: '画一只猫',
-      apiProvider: 'fal',
-      apiProfileId: imageProfile.id,
-      apiProfileName: imageProfile.name,
-      apiModel: imageProfile.model,
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-      finishedAt: Date.now(),
-      elapsed: 10,
-    })
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
-        status: 'error',
-        error: '已停止生成。',
-        createdAt: 1,
-        finishedAt: 2,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '已停止生成。', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    vi.mocked(getFalQueuedImageResult).mockResolvedValueOnce({
-      images: ['data:image/png;base64,agent-recovered-after-stop'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      tasks: [],
-      agentConversations: [],
-      activeAgentConversationId: 'conversation-a',
-      showToast: vi.fn(),
-    })
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => {
-      expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
-    })
-
-    expect(callAgentResponsesApi).not.toHaveBeenCalled()
-    expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
-    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'error', error: '已停止生成。' })
-  })
-
-  it('does not overwrite a stopped Agent task when an in-flight fal recovery completes', async () => {
-    const agentTask = task({
-      id: 'agent-fal-task',
-      prompt: '画一只猫',
-      apiProvider: 'fal',
-      apiProfileId: 'fal-profile',
-      apiProfileName: 'fal',
-      apiModel: 'fal-model',
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-      finishedAt: Date.now(),
-      elapsed: 10,
-    })
-    const recovery = deferred<Awaited<ReturnType<typeof getFalQueuedImageResult>>>()
-    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => recovery.promise)
-    const conversation = agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: [agentTask.id],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: [agentTask.id], createdAt: 2 },
-      ],
-    })
-    useStore.setState({
-      tasks: [],
-      agentConversations: [],
-      activeAgentConversationId: 'conversation-a',
-      showToast: vi.fn(),
-    })
-    await putDbTask(agentTask)
-    await putAgentConversation(conversation)
-
-    await initStore()
-    await vi.waitFor(() => expect(getFalQueuedImageResult).toHaveBeenCalledTimes(1))
-    useStore.setState((state) => ({
-      agentConversations: state.agentConversations.map((item) => item.id === 'conversation-a'
-        ? { ...item, rounds: item.rounds.map((round) => round.id === 'round-a' ? { ...round, status: 'running', error: null } : round) }
-        : item),
-    }))
-    stopAgentResponse('conversation-a')
-    recovery.resolve({
-      images: ['data:image/png;base64,should-not-write'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: [],
-    })
-    await recovery.promise
-    await vi.waitFor(() => {
-      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: '已停止生成。', falRecoverable: false })
-    })
-
-    expect(useStore.getState().tasks[0]).toMatchObject({
-      status: 'error',
-      error: '已停止生成。',
-      falRecoverable: false,
-      outputImages: [],
-    })
   })
 
   it('clears recoverable Agent image tasks when stopping the Agent round', () => {
@@ -2758,6 +2318,35 @@ describe('data import', () => {
     expect(state.activeAgentConversationId).toBe('local-conversation')
   })
 
+  it.each([
+    { sourceMode: 'agent' as const },
+    { agentConversationId: 'imported-conversation' },
+    { agentRoundId: 'imported-round' },
+  ])('archives imported running Agent tasks %j immediately without restarting them', async (source) => {
+    await clearTasks()
+    const importedTask = task({
+      ...source, id: 'imported-agent-task', prompt: '保留导入提示词', status: 'running',
+      apiProvider: 'fal', falRequestId: 'request-a', falEndpoint: 'fal-ai/model', falRecoverable: true,
+      customTaskId: 'custom-a', customRecoverable: true, inputImageIds: ['input-a'], outputImages: ['output-a'],
+      finishedAt: null, elapsed: null,
+    })
+    const imported = await importData(importFile({
+      version: 3, exportedAt: new Date(0).toISOString(), tasks: [importedTask], imageFiles: {},
+    }), { importConfig: false, importTasks: true })
+
+    expect(imported).toBe(true)
+    for (const archived of [useStore.getState().tasks[0], (await getAllTasks())[0]]) {
+      expect(archived).toMatchObject({
+        ...source, id: importedTask.id, prompt: importedTask.prompt, status: 'error',
+        error: 'Agent 模式已停用，旧任务已归档。', falRecoverable: false, customRecoverable: false,
+        inputImageIds: ['input-a'], outputImages: ['output-a'], falRequestId: 'request-a', customTaskId: 'custom-a',
+      })
+    }
+    expect(getFalQueuedImageResult).not.toHaveBeenCalled()
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
   it('stores imported legacy agent conversations in IndexedDB without localStorage or image payloads', async () => {
     const importedConversation = agentConversation({
       id: 'legacy-imported-conversation',
@@ -3109,17 +2698,14 @@ describe('agent draft lifecycle', () => {
     })
   })
 
-  it('restores the agent draft when switching back from gallery mode', () => {
+  it('keeps the Agent draft archived when legacy callers request Agent mode', () => {
     useStore.getState().setAppMode('gallery')
     useStore.getState().setAppMode('agent')
-
     const state = useStore.getState()
-    expect(state.appMode).toBe('agent')
-    expect(state.prompt).toBe(draftState.prompt)
-    expect(state.inputImages).toEqual(draftState.inputImages)
-    expect(state.maskDraft).toEqual(draftState.maskDraft)
-    expect(state.maskEditorImageId).toBe(imageA.id)
-    expect(state.agentEditingRoundId).toBeNull()
+    expect(state.appMode).toBe('gallery')
+    expect(state.prompt).toBe('')
+    expect(state.inputImages).toEqual([])
+    expect(state.agentInputDrafts['conversation-a'].prompt).toBe(draftState.prompt)
   })
 
   it('keeps the gallery draft when switching into agent mode and back', () => {
@@ -3144,9 +2730,9 @@ describe('agent draft lifecycle', () => {
     useStore.getState().setAppMode('agent')
 
     let state = useStore.getState()
-    expect(state.appMode).toBe('agent')
+    expect(state.appMode).toBe('gallery')
     expect(state.galleryInputDraft).toMatchObject({ prompt: galleryPrompt, inputImages: [imageB] })
-    expect(state.prompt).toBe(draftState.prompt)
+    expect(state.prompt).toBe(galleryPrompt)
 
     useStore.getState().setAppMode('gallery')
 
@@ -3311,209 +2897,6 @@ describe('agent context for removed outputs', () => {
       outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
       responseId: 'response-b',
     })
-  })
-
-  it('does not send removed image_generation results back to the model', async () => {
-    await putImage({ id: 'image-live', dataUrl: 'data:image/png;base64,live-base64' })
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
-    const serializedInput = JSON.stringify(input)
-    expect(serializedInput).not.toContain('deleted-base64')
-    expect(serializedInput).toContain('live-base64')
-    expect(serializedInput).not.toContain('deleted-call')
-    expect(serializedInput).not.toContain('live-call')
-    expect(serializedInput).not.toContain('image_generation_call')
-    expect(serializedInput).toContain('removed_ref')
-    expect(serializedInput).toContain('round-1-image-1')
-    expect(serializedInput).toContain('round-1-image-2')
-    expect(serializedInput).toContain('input_image')
-  })
-
-  it('restores stripped image_generation results from task payloads when building context', async () => {
-    await putImage({ id: 'image-live', dataUrl: 'data:image/png;base64,live-base64' })
-    const rawResponsePayload = JSON.stringify({
-      output: [
-        { type: 'message', content: [{ type: 'output_text', text: '已生成两张图。' }] },
-        { type: 'image_generation_call', id: 'deleted-call', result: 'deleted-base64' },
-        { type: 'image_generation_call', id: 'live-call', result: 'live-base64' },
-      ],
-    }, null, 2)
-    useStore.setState((state) => ({
-      tasks: [task({
-        id: 'task-live',
-        outputImages: ['image-live'],
-        rawResponsePayload,
-        sourceMode: 'agent',
-        agentRoundId: 'round-a',
-        agentToolCallId: 'live-call',
-      })],
-      agentConversations: state.agentConversations.map((conversation) => ({
-        ...conversation,
-        rounds: conversation.rounds.map((round) => round.id === 'round-a'
-          ? {
-              ...round,
-              responseOutput: [
-                { type: 'message', content: [{ type: 'output_text', text: '已生成两张图。' }] },
-                { type: 'image_generation_call', id: 'deleted-call' },
-                { type: 'image_generation_call', id: 'live-call' },
-              ],
-            }
-          : round,
-        ),
-      })),
-    }))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
-    const serializedInput = JSON.stringify(input)
-    expect(serializedInput).toContain('live-base64')
-    expect(serializedInput).toContain('input_image')
-    expect(serializedInput).not.toContain('deleted-base64')
-    expect(serializedInput).not.toContain('live-call')
-    expect(serializedInput).not.toContain('image_generation_call')
-  })
-
-  it('hydrates stripped task payload image results from stored images when building context', async () => {
-    await putImage({ id: 'image-hydrate', dataUrl: 'data:image/png;base64,hydrated-live-base64' })
-    const rawResponsePayload = JSON.stringify({
-      output: [{ type: 'image_generation_call' }],
-    }, null, 2)
-    useStore.setState((state) => ({
-      tasks: [task({
-        id: 'task-live',
-        outputImages: ['image-hydrate'],
-        rawResponsePayload,
-        sourceMode: 'agent',
-        agentRoundId: 'round-a',
-      })],
-      agentConversations: state.agentConversations.map((conversation) => ({
-        ...conversation,
-        rounds: conversation.rounds.map((round) => round.id === 'round-a'
-          ? {
-              ...round,
-              outputTaskIds: ['task-live'],
-              responseOutput: [{ type: 'image_generation_call' }],
-            }
-          : round,
-        ),
-      })),
-    }))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
-    const serializedInput = JSON.stringify(input)
-    expect(serializedInput).toContain('hydrated-live-base64')
-  })
-
-  it('restores stripped image results even when legacy tasks lack tool call ids', async () => {
-    await putImage({ id: 'image-legacy', dataUrl: 'data:image/png;base64,legacy-live-base64' })
-    const rawResponsePayload = JSON.stringify({
-      output: [
-        { type: 'message', content: [{ type: 'output_text', text: '已生成图片。' }] },
-        { type: 'image_generation_call', result: { base64: 'legacy-live-base64' } },
-      ],
-    }, null, 2)
-    useStore.setState((state) => ({
-      tasks: [task({
-        id: 'legacy-task-live',
-        outputImages: ['image-legacy'],
-        rawResponsePayload,
-        sourceMode: 'agent',
-        agentRoundId: 'round-a',
-        agentToolCallId: undefined,
-      })],
-      agentConversations: state.agentConversations.map((conversation) => ({
-        ...conversation,
-        rounds: conversation.rounds.map((round) => round.id === 'round-a'
-          ? {
-              ...round,
-              outputTaskIds: ['legacy-task-live'],
-              responseOutput: [
-                { type: 'message', content: [{ type: 'output_text', text: '已生成图片。' }] },
-                { type: 'image_generation_call' },
-              ],
-            }
-          : round,
-        ),
-      })),
-    }))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
-    const serializedInput = JSON.stringify(input)
-    expect(serializedInput).toContain('legacy-live-base64')
-    expect(serializedInput).toContain('input_image')
-    expect(serializedInput).not.toContain('image_generation_call')
-    expect(serializedInput.match(/已生成图片。/g)).toHaveLength(1)
-  })
-
-  it('restores all stripped batch image results after restart', async () => {
-    await putImage({ id: 'image-batch-1', dataUrl: 'data:image/png;base64,batch-base64-1' })
-    await putImage({ id: 'image-batch-2', dataUrl: 'data:image/png;base64,batch-base64-2' })
-    const batchOnePayload = JSON.stringify({
-      output: [{ type: 'image_generation_call', id: 'batch-call-1', result: 'batch-base64-1' }],
-    }, null, 2)
-    const batchTwoPayload = JSON.stringify({
-      output: [{ type: 'image_generation_call', id: 'batch-call-2', result: 'batch-base64-2' }],
-    }, null, 2)
-    useStore.setState((state) => ({
-      tasks: [
-        task({
-          id: 'task-batch-1',
-          outputImages: ['image-batch-1'],
-          rawResponsePayload: batchOnePayload,
-          sourceMode: 'agent',
-          agentRoundId: 'round-a',
-          agentToolCallId: 'batch-call-1',
-          agentBatchCallId: 'batch-fc-1',
-        }),
-        task({
-          id: 'task-batch-2',
-          outputImages: ['image-batch-2'],
-          rawResponsePayload: batchTwoPayload,
-          sourceMode: 'agent',
-          agentRoundId: 'round-a',
-          agentToolCallId: 'batch-call-2',
-          agentBatchCallId: 'batch-fc-1',
-        }),
-      ],
-      agentConversations: state.agentConversations.map((conversation) => ({
-        ...conversation,
-        rounds: conversation.rounds.map((round) => round.id === 'round-a'
-          ? {
-              ...round,
-              outputTaskIds: ['task-batch-1', 'task-batch-2'],
-              responseOutput: [
-                { type: 'function_call', name: 'generate_image_batch', call_id: 'batch-fc-1', arguments: '{}' },
-                { type: 'function_call_output', call_id: 'batch-fc-1', output: '{"images":[{"id":"1","status":"done"},{"id":"2","status":"done"}]}' },
-                { type: 'image_generation_call' },
-                { type: 'image_generation_call' },
-              ],
-            }
-          : round,
-        ),
-      })),
-    }))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
-    const serializedInput = JSON.stringify(input)
-    expect(serializedInput).toContain('batch-base64-1')
-    expect(serializedInput).toContain('batch-base64-2')
-    expect(serializedInput).toContain('input_image')
-    expect(serializedInput).not.toContain('batch-call-1')
-    expect(serializedInput).not.toContain('batch-call-2')
-    expect(serializedInput).not.toContain('image_generation_call')
   })
 
   it('scrubs stored agent response payloads when deleting an output task', async () => {
@@ -4388,1039 +3771,6 @@ describe('task deletion', () => {
   })
 })
 
-describe('agent built-in image tool failure', () => {
-  const responsesProfile = createDefaultOpenAIProfile({
-    id: 'responses-profile',
-    apiKey: 'test-key',
-    apiMode: 'responses',
-    model: DEFAULT_RESPONSES_MODEL,
-    streamImages: true,
-  })
-
-  beforeEach(async () => {
-    await clearTasks()
-    await clearImages()
-    await clearAgentConversations()
-    vi.mocked(callAgentResponsesApi).mockReset()
-    vi.mocked(callImageApi).mockReset()
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        apiKey: 'test-key',
-        apiMode: 'responses',
-        model: DEFAULT_RESPONSES_MODEL,
-        streamImages: true,
-        profiles: [responsesProfile],
-        activeProfileId: responsesProfile.id,
-      }),
-      prompt: '画一张图',
-      inputImages: [],
-      maskDraft: null,
-      params: { ...DEFAULT_PARAMS },
-      appMode: 'agent',
-      tasks: [],
-      streamPreviews: {},
-      streamPreviewSlots: {},
-      agentConversations: [agentConversation({
-        id: 'conversation-a',
-        activeRoundId: null,
-        rounds: [],
-        messages: [],
-      })],
-      activeAgentConversationId: 'conversation-a',
-      agentEditingRoundId: null,
-      showToast: vi.fn(),
-    })
-  })
-
-  it('normalizes Agent image params with the Hybrid image profile', async () => {
-    const imageProfile = createDefaultOpenAIProfile({
-      id: 'codex-image-profile',
-      apiKey: 'image-key',
-      apiMode: 'images',
-      codexCli: true,
-    })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      params: { ...DEFAULT_PARAMS, size: '2048x2048' },
-    })
-    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
-      text: '',
-      images: [],
-      outputItems: [],
-      responseId: 'response-normalized-params',
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    expect(vi.mocked(callAgentResponsesApi).mock.calls[0][0].params.size).toBe('1024x1024')
-  })
-
-  it('does not apply Codex text-profile limits to a non-Codex image profile', async () => {
-    const textProfile = createDefaultOpenAIProfile({
-      ...responsesProfile,
-      id: 'codex-text-profile',
-      codexCli: true,
-    })
-    const imageProfile = createDefaultOpenAIProfile({
-      id: 'standard-image-profile',
-      apiKey: 'image-key',
-      apiMode: 'images',
-    })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      params: { ...DEFAULT_PARAMS, size: '2048x2048', quality: 'high' },
-    })
-    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
-      text: '',
-      images: [],
-      outputItems: [],
-      responseId: 'response-standard-image-params',
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-
-    expect(vi.mocked(callAgentResponsesApi).mock.calls[0][0].params).toMatchObject({
-      size: '2048x2048',
-      quality: 'high',
-    })
-  })
-
-  it('does not commit or report a deleted Hybrid single-image result', async () => {
-    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
-    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-        agentMaxToolRounds: 1,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
-      text: '',
-      images: [],
-      outputItems: [{
-        type: 'function_call',
-        name: 'generate_image',
-        call_id: 'hybrid-single-call',
-        arguments: JSON.stringify({ id: 'single', prompt: 'single prompt' }),
-      }],
-      responseId: 'response-function',
-    })
-    vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
-    const runningTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'hybrid-single-call')
-    expect(runningTask).toBeDefined()
-    await removeTask(runningTask!)
-    request.resolve({
-      images: ['data:image/png;base64,deleted-hybrid-single'],
-      actualParams: {},
-      actualParamsList: [{}],
-      revisedPrompts: ['single prompt'],
-    })
-
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
-    const conversation = useStore.getState().agentConversations[0]
-    expect(useStore.getState().tasks).toEqual([])
-    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(conversation.rounds[0].responseOutput)).not.toContain('hybrid-single-call')
-    expect(conversation.messages.find((message) => message.role === 'assistant')?.content).not.toContain('已达到最大工具调用次数')
-  })
-
-  it('reports only committed Hybrid batch results and counts only those tools', async () => {
-    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
-    const deletedRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const liveRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-        agentMaxToolRounds: 3,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi)
-      .mockResolvedValueOnce({
-        text: '',
-        images: [],
-        outputItems: [{
-          type: 'function_call',
-          name: 'generate_image_batch',
-          call_id: 'hybrid-batch-call',
-          arguments: JSON.stringify({ images: [
-            { id: 'deleted-item', prompt: 'deleted prompt' },
-            { id: 'live-item', prompt: 'live prompt' },
-          ] }),
-        }],
-        responseId: 'response-batch-function',
-      })
-      .mockResolvedValueOnce({
-        text: 'batch complete',
-        images: [],
-        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'batch complete' }] }],
-        responseId: 'response-batch-done',
-      })
-    vi.mocked(callImageApi)
-      .mockImplementationOnce(() => deletedRequest.promise)
-      .mockImplementationOnce(() => liveRequest.promise)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().tasks.filter((item) => item.agentBatchCallId === 'hybrid-batch-call')).toHaveLength(2))
-    const deletedTask = useStore.getState().tasks.find((item) => item.prompt === 'deleted prompt')
-    expect(deletedTask).toBeDefined()
-    expect(deletedTask).toMatchObject({ agentBatchCallId: 'hybrid-batch-call' })
-    await removeTask(deletedTask!)
-    expect(JSON.stringify(useStore.getState().agentConversations[0].rounds[0].responseOutput)).not.toContain('deleted-item')
-    deletedRequest.resolve({ images: ['data:image/png;base64,deleted-batch'], actualParams: {}, actualParamsList: [{}], revisedPrompts: ['deleted prompt'] })
-    liveRequest.resolve({ images: ['data:image/png;base64,live-batch'], actualParams: {}, actualParamsList: [{}], revisedPrompts: ['live prompt'] })
-
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(2))
-    const continuationInput = JSON.stringify(vi.mocked(callAgentResponsesApi).mock.calls[1][0].input)
-    expect(continuationInput).not.toContain('deleted-item')
-    expect(continuationInput).not.toContain('deleted prompt')
-    expect(continuationInput).toContain('live-item')
-    expect(continuationInput).toContain('\\"status\\":\\"done\\"')
-    expect(continuationInput).toContain('Tool-call budget: 1/3 used.')
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
-    expect(useStore.getState().tasks).toHaveLength(1)
-    expect(useStore.getState().tasks[0]).toMatchObject({ prompt: 'live prompt', status: 'done' })
-    const finalOutput = JSON.stringify(useStore.getState().agentConversations[0].rounds[0].responseOutput)
-    expect(finalOutput).not.toContain('deleted-item')
-    expect(finalOutput).toContain('live-item')
-    expect(finalOutput).toContain('function_call_output')
-  })
-
-  it('canonicalizes batch identities across tasks, round output, and continuation without deletion', async () => {
-    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
-    const requests = Array.from({ length: 4 }, () => deferred<Awaited<ReturnType<typeof callImageApi>>>())
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi)
-      .mockResolvedValueOnce({
-        text: '',
-        images: [],
-        outputItems: [{
-          type: 'function_call',
-          name: 'generate_image_batch',
-          call_id: 'normalized-batch-call',
-          arguments: JSON.stringify({ images: [
-            { id: ' duplicate ', prompt: ' deleted duplicate ' },
-            { id: 'duplicate', prompt: 'live duplicate' },
-            { id: '   ', prompt: 'blank id' },
-            { prompt: 'missing id' },
-            { id: 'ignored', prompt: '   ' },
-          ] }),
-        }],
-        responseId: 'response-normalized-batch',
-      })
-      .mockResolvedValueOnce({
-        text: 'complete',
-        images: [],
-        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'complete' }] }],
-        responseId: 'response-normalized-complete',
-      })
-    for (const request of requests) vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().tasks.filter((item) => item.agentBatchCallId === 'normalized-batch-call')).toHaveLength(4))
-    for (let index = 0; index < requests.length; index++) {
-      requests[index].resolve({
-        images: [`data:image/png;base64,normalized-${index}`],
-        actualParams: {},
-        actualParamsList: [{}],
-        revisedPrompts: [],
-      })
-    }
-
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
-    expect(useStore.getState().tasks.map((item) => item.agentBatchItemId).sort()).toEqual(['duplicate', 'duplicate_2', 'image_3', 'image_4'])
-    expect(callImageApi).toHaveBeenCalledTimes(4)
-    const output = useStore.getState().agentConversations[0].rounds[0].responseOutput ?? []
-    const functionCall = output.find((item) => item.type === 'function_call' && item.call_id === 'normalized-batch-call')
-    const functionOutput = output.find((item) => item.type === 'function_call_output' && item.call_id === 'normalized-batch-call')
-    expect(JSON.parse(functionCall?.arguments ?? '{}').images).toEqual([
-      { id: 'duplicate', prompt: 'deleted duplicate' },
-      { id: 'duplicate_2', prompt: 'live duplicate' },
-      { id: 'image_3', prompt: 'blank id' },
-      { id: 'image_4', prompt: 'missing id' },
-    ])
-    expect(JSON.parse(typeof functionOutput?.output === 'string' ? functionOutput.output : '{}').images.map((item: { id: string }) => item.id)).toEqual(['duplicate', 'duplicate_2', 'image_3', 'image_4'])
-    const continuationInput = JSON.stringify(vi.mocked(callAgentResponsesApi).mock.calls[1][0].input)
-    expect(continuationInput).toContain('duplicate_2')
-    expect(continuationInput).not.toContain(' duplicate ')
-    expect(continuationInput).not.toContain('ignored')
-  })
-
-  it('keeps live batch output through repeated cleanup when deleted items fail or reject', async () => {
-    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
-    const failedRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const rejectedRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const liveRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi)
-      .mockResolvedValueOnce({
-        text: '',
-        images: [],
-        outputItems: [{
-          type: 'function_call',
-          name: 'generate_image_batch',
-          call_id: 'batch-failure-call',
-          arguments: JSON.stringify({ images: [
-            { id: 'failed-deleted', prompt: 'failed deleted prompt' },
-            { id: 'rejected-deleted', prompt: 'rejected deleted prompt' },
-            { id: 'live-item', prompt: 'live prompt' },
-          ] }),
-        }],
-        responseId: 'response-batch-failures',
-      })
-      .mockImplementationOnce(async () => {
-        useStore.setState((state) => ({
-          agentConversations: state.agentConversations.map((conversation) => ({
-            ...conversation,
-            rounds: conversation.rounds.map((round) => round.id === conversation.activeRoundId
-              ? {
-                  ...round,
-                  responseOutput: [
-                    {
-                      type: 'function_call',
-                      name: 'generate_image_batch',
-                      call_id: 'batch-failure-call',
-                      arguments: JSON.stringify({ images: [
-                        { id: 'failed-deleted', prompt: 'failed deleted prompt' },
-                        { id: 'rejected-deleted', prompt: 'rejected deleted prompt' },
-                        { id: 'live-item', prompt: 'live prompt' },
-                      ] }),
-                    },
-                    {
-                      type: 'function_call_output',
-                      call_id: 'batch-failure-call',
-                      output: JSON.stringify({ images: [
-                        { id: 'failed-deleted', status: 'error' },
-                        { id: 'rejected-deleted', status: 'error' },
-                        { id: 'live-item', status: 'done' },
-                      ] }),
-                    },
-                  ],
-                }
-              : round),
-          })),
-        }))
-        throw new Error('continuation failed')
-      })
-    vi.mocked(callImageApi)
-      .mockImplementationOnce(() => failedRequest.promise)
-      .mockImplementationOnce(() => rejectedRequest.promise)
-      .mockImplementationOnce(() => liveRequest.promise)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().tasks.filter((item) => item.agentBatchCallId === 'batch-failure-call')).toHaveLength(3))
-    await removeTask(useStore.getState().tasks.find((item) => item.agentBatchItemId === 'failed-deleted')!)
-    await removeTask(useStore.getState().tasks.find((item) => item.agentBatchItemId === 'rejected-deleted')!)
-    const afterRepeatedCleanup = JSON.stringify(useStore.getState().agentConversations[0].rounds[0].responseOutput)
-    expect(afterRepeatedCleanup).not.toContain('failed-deleted')
-    expect(afterRepeatedCleanup).not.toContain('rejected-deleted')
-    expect(afterRepeatedCleanup).toContain('live-item')
-
-    failedRequest.resolve({
-      images: [],
-      actualParams: {},
-      actualParamsList: [],
-      revisedPrompts: [],
-      failedRequests: [{ requestIndex: 0, error: 'deleted null result' }],
-    })
-    rejectedRequest.reject(new Error('deleted rejection'))
-    liveRequest.resolve({ images: ['data:image/png;base64,live'], actualParams: {}, actualParamsList: [{}], revisedPrompts: ['live prompt'] })
-
-    await vi.waitFor(() => {
-      const round = useStore.getState().agentConversations[0].rounds[0]
-      expect(round?.status).toBe('error')
-      expect(JSON.stringify(round.responseOutput)).not.toContain('failed-deleted')
-      expect(JSON.stringify(round.responseOutput)).not.toContain('rejected-deleted')
-    })
-    const finalOutput = JSON.stringify(useStore.getState().agentConversations[0].rounds[0].responseOutput)
-    expect(finalOutput).not.toContain('failed-deleted')
-    expect(finalOutput).not.toContain('rejected-deleted')
-    expect(finalOutput).not.toContain('deleted null result')
-    expect(finalOutput).not.toContain('deleted rejection')
-    expect(finalOutput).toContain('live-item')
-    expect(finalOutput).toContain('function_call_output')
-    expect(useStore.getState().tasks).toHaveLength(1)
-    expect(useStore.getState().tasks[0]).toMatchObject({ agentBatchItemId: 'live-item', status: 'done' })
-    await vi.waitFor(async () => {
-      const persistedOutput = JSON.stringify((await getAllAgentConversations())[0]?.rounds[0]?.responseOutput)
-      expect(persistedOutput).not.toContain('failed-deleted')
-      expect(persistedOutput).not.toContain('rejected-deleted')
-      expect(persistedOutput).toContain('live-item')
-    })
-  })
-
-  it('removes the function pair without reporting success when an entire batch is deleted', async () => {
-    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
-    const failedRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    const rejectedRequest = deferred<Awaited<ReturnType<typeof callImageApi>>>()
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [responsesProfile, imageProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({
-      text: '',
-      images: [],
-      outputItems: [{
-        type: 'function_call',
-        name: 'generate_image_batch',
-        call_id: 'all-deleted-batch',
-        arguments: JSON.stringify({ images: [
-          { id: 'deleted-a', prompt: 'deleted a' },
-          { id: 'deleted-b', prompt: 'deleted b' },
-        ] }),
-      }],
-      responseId: 'response-all-deleted',
-    })
-    vi.mocked(callImageApi)
-      .mockImplementationOnce(() => failedRequest.promise)
-      .mockImplementationOnce(() => rejectedRequest.promise)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().tasks.filter((item) => item.agentBatchCallId === 'all-deleted-batch')).toHaveLength(2))
-    await removeMultipleTasks(useStore.getState().tasks.map((item) => item.id))
-    failedRequest.resolve({
-      images: [],
-      actualParams: {},
-      actualParamsList: [],
-      revisedPrompts: [],
-      failedRequests: [{ requestIndex: 0, error: 'deleted failure' }],
-    })
-    rejectedRequest.reject(new Error('deleted rejection'))
-
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
-    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
-    expect(useStore.getState().tasks).toEqual([])
-    const conversation = useStore.getState().agentConversations[0]
-    expect(JSON.stringify(conversation.rounds[0].responseOutput)).not.toContain('all-deleted-batch')
-    expect(conversation.messages.find((message) => message.role === 'assistant')?.content).not.toContain('图像已生成')
-  })
-
-  it('marks a started built-in image task as error when the stream fails', async () => {
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-fail' })
-      await opts.onImagePartialImage?.({
-        toolCallId: 'ig-fail',
-        image: 'data:image/png;base64,cGFydGlhbA==',
-        partialImageIndex: 0,
-      })
-      throw new Error('image_generation failed')
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
-
-    const state = useStore.getState()
-    const failedTask = state.tasks[0]
-    expect(failedTask).toMatchObject({
-      status: 'error',
-      error: 'image_generation failed',
-      agentToolCallId: 'ig-fail',
-      sourceMode: 'agent',
-    })
-    expect(state.streamPreviews[failedTask.id]).toBeUndefined()
-    expect(state.streamPreviewSlots[failedTask.id]).toBeUndefined()
-
-    const round = state.agentConversations[0].rounds[0]
-    expect(round).toMatchObject({
-      status: 'error',
-      error: 'image_generation failed',
-      outputTaskIds: [failedTask.id],
-    })
-  })
-
-  it('marks a failed built-in image task as error while the Agent stream continues', async () => {
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-fail' })
-      await opts.onImagePartialImage?.({
-        toolCallId: 'ig-fail',
-        image: 'data:image/png;base64,cGFydGlhbA==',
-        partialImageIndex: 0,
-      })
-      await opts.onImageToolFailed?.({ toolCallId: 'ig-fail', error: 'safety rejected' })
-      opts.onTextDelta?.('图片失败，但回复继续。')
-      return {
-        text: '图片失败，但回复继续。',
-        images: [],
-        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '图片失败，但回复继续。' }] }],
-        responseId: 'response-continued',
-      }
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
-
-    const state = useStore.getState()
-    const failedTask = state.tasks[0]
-    expect(failedTask).toMatchObject({
-      status: 'error',
-      error: 'safety rejected',
-      agentToolCallId: 'ig-fail',
-      sourceMode: 'agent',
-    })
-    expect(state.streamPreviews[failedTask.id]).toBeUndefined()
-    expect(state.streamPreviewSlots[failedTask.id]).toBeUndefined()
-
-    const round = state.agentConversations[0].rounds[0]
-    expect(round).toMatchObject({
-      status: 'done',
-      error: null,
-      outputTaskIds: [failedTask.id],
-    })
-    expect(state.agentConversations[0].messages.find((message) => message.role === 'assistant')).toMatchObject({
-      content: '图片失败，但回复继续。',
-      outputTaskIds: [failedTask.id],
-    })
-  })
-
-  it('does not restore a deleted Agent task when its image and final response arrive late', async () => {
-    let deletedTaskId = ''
-    let liveTaskId = ''
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-deleted' })
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-live' })
-      const runningTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'ig-deleted')
-      const liveTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'ig-live')
-      if (!runningTask) throw new Error('Agent task was not created')
-      if (!liveTask) throw new Error('Live Agent task was not created')
-      deletedTaskId = runningTask.id
-      liveTaskId = liveTask.id
-      await removeTask(runningTask)
-      await opts.onImageToolCompleted?.({
-        toolCallId: 'ig-deleted',
-        dataUrl: 'data:image/png;base64,late-agent-output',
-      })
-      const outputItems = [
-        { type: 'image_generation_call' as const, id: 'ig-deleted', result: 'late-agent-base64' },
-        { type: 'image_generation_call' as const, id: 'ig-live', result: 'live-agent-base64' },
-      ]
-      return {
-        text: '',
-        images: [],
-        outputItems,
-        rawResponsePayload: JSON.stringify({ output: outputItems }),
-        responseId: 'response-late',
-      }
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => {
-      const state = useStore.getState()
-      expect(state.agentConversations[0].rounds[0]?.status).toBe('done')
-      expect(state.tasks[0]?.rawResponsePayload).not.toContain('ig-deleted')
-    })
-
-    const state = useStore.getState()
-    const round = state.agentConversations[0].rounds[0]
-    const assistantMessage = state.agentConversations[0].messages.find((message) => message.role === 'assistant')
-    expect(deletedTaskId).not.toBe('')
-    expect(liveTaskId).not.toBe('')
-    expect(state.tasks.map((item) => item.id)).toEqual([liveTaskId])
-    expect((await getAllTasks()).map((item) => item.id)).toEqual([liveTaskId])
-    expect(await getAllImageIds()).toEqual([])
-    expect(round.outputTaskIds).toEqual([liveTaskId])
-    expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted')
-    expect(JSON.stringify(round.responseOutput)).not.toContain('late-agent-base64')
-    expect(JSON.stringify(round.responseOutput)).toContain('ig-live')
-    expect(state.tasks[0].rawResponsePayload).not.toContain('ig-deleted')
-    expect(state.tasks[0].rawResponsePayload).toContain('ig-live')
-    expect(assistantMessage?.outputTaskIds).toEqual([liveTaskId])
-  })
-
-  it('cleans late response output after an Agent failure', async () => {
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-deleted-failure' })
-      const runningTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'ig-deleted-failure')
-      if (!runningTask) throw new Error('Agent task was not created')
-      await removeTask(runningTask)
-      opts.onOutputItems?.([{ type: 'image_generation_call', id: 'ig-deleted-failure', result: 'late-failure-base64' }])
-      throw new Error('stream failed')
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => {
-      const round = useStore.getState().agentConversations[0].rounds[0]
-      expect(round).toMatchObject({ status: 'error', error: 'stream failed' })
-      expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-failure')
-    })
-
-    const round = useStore.getState().agentConversations[0].rounds[0]
-    expect(round).toMatchObject({ status: 'error', error: 'stream failed' })
-    expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-failure')
-    expect(JSON.stringify(round.responseOutput)).not.toContain('late-failure-base64')
-  })
-
-  it('cleans late response output after an Agent abort', async () => {
-    let ready: () => void = () => {}
-    const outputWritten = new Promise<void>((resolve) => { ready = resolve })
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-deleted-abort' })
-      const runningTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'ig-deleted-abort')
-      if (!runningTask) throw new Error('Agent task was not created')
-      await removeTask(runningTask)
-      opts.onOutputItems?.([{ type: 'image_generation_call', id: 'ig-deleted-abort', result: 'late-abort-base64' }])
-      ready()
-      const signal = opts.signal
-      if (!signal) throw new Error('Abort signal was not provided')
-      return new Promise((_, reject) => {
-        const abort = () => reject(new DOMException('Agent 请求已停止', 'AbortError'))
-        if (signal.aborted) abort()
-        else signal.addEventListener('abort', abort, { once: true })
-      })
-    })
-
-    await submitAgentMessage()
-    await outputWritten
-    stopAgentResponse('conversation-a')
-    await vi.waitFor(() => {
-      const round = useStore.getState().agentConversations[0].rounds[0]
-      expect(round).toMatchObject({ status: 'error', error: '已停止生成。' })
-      expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-abort')
-    })
-
-    const round = useStore.getState().agentConversations[0].rounds[0]
-    expect(round).toMatchObject({ status: 'error', error: '已停止生成。' })
-    expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-abort')
-    expect(JSON.stringify(round.responseOutput)).not.toContain('late-abort-base64')
-  })
-
-  it('deletes a stopped round while its aborted controller is still awaiting cleanup', async () => {
-    const response = deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>()
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(() => response.promise)
-    vi.mocked(commitTaskDeletion).mockImplementation(commitTaskDeletionImplementation)
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
-    const roundId = useStore.getState().agentConversations[0].rounds[0].id
-    stopAgentResponse('conversation-a')
-    expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({
-      status: 'error',
-      error: '已停止生成。',
-    })
-
-    const result = await useStore.getState().deleteAgentRound('conversation-a', roundId)
-
-    expect(result).toBe('deleted')
-    expect(useStore.getState().agentConversations[0].rounds).toEqual([])
-    expect(useStore.getState().agentConversations[0].messages).toEqual([])
-    expect(useStore.getState().tasks).toEqual([])
-
-    response.resolve({
-      text: '不应复活',
-      images: [],
-      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '不应复活' }] }],
-      responseId: 'late-response',
-    })
-    await response.promise
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(useStore.getState().agentConversations[0].rounds).toEqual([])
-    expect(useStore.getState().agentConversations[0].messages).toEqual([])
-    expect(useStore.getState().tasks).toEqual([])
-  })
-
-  it('cleans late response output when Agent execution pauses for recovery', async () => {
-    const { callImageApi } = await import('./lib/api')
-    const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [responsesProfile, falProfile],
-        activeProfileId: responsesProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: responsesProfile.id,
-        agentImageProfileId: falProfile.id,
-      }),
-    })
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce(async (opts) => {
-      await opts.onImageToolStarted?.({ toolCallId: 'ig-deleted-recovery' })
-      const runningTask = useStore.getState().tasks.find((item) => item.agentToolCallId === 'ig-deleted-recovery')
-      if (!runningTask) throw new Error('Agent task was not created')
-      await removeTask(runningTask)
-      const outputItems = [
-        { type: 'image_generation_call' as const, id: 'ig-deleted-recovery', result: 'late-recovery-base64' },
-        { type: 'function_call' as const, name: 'generate_image', call_id: 'recovery-call', arguments: JSON.stringify({ id: 'image', prompt: '画一张图' }) },
-      ]
-      opts.onOutputItems?.(outputItems)
-      return { text: '', images: [], outputItems, responseId: 'response-recovery' }
-    })
-    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
-      opts.onFalRequestEnqueued?.({ requestId: 'fal-request', endpoint: 'fal-endpoint' })
-      throw new Error('Failed to fetch')
-    })
-
-    await submitAgentMessage()
-    await vi.waitFor(() => {
-      const state = useStore.getState()
-      const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
-      const responseOutput = JSON.stringify(state.agentConversations[0].rounds[0]?.responseOutput)
-      expect(recoveryTask?.falRecoverable).toBe(true)
-      expect(responseOutput).not.toContain('ig-deleted-recovery')
-    })
-
-    const state = useStore.getState()
-    const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
-    expect(recoveryTask).toMatchObject({ status: 'error', falRecoverable: true })
-    expect(callAgentResponsesApi).toHaveBeenCalledTimes(1)
-    expect(state.agentConversations[0].rounds[0].status).toBe('running')
-    expect(JSON.stringify(state.agentConversations[0].rounds[0].responseOutput)).not.toContain('ig-deleted-recovery')
-    expect(JSON.stringify(state.agentConversations[0].rounds[0].responseOutput)).not.toContain('late-recovery-base64')
-    await removeTask(recoveryTask!)
-  })
-})
-
-describe('agent batch reference resolution', () => {
-  const responsesProfile = createDefaultOpenAIProfile({
-    id: 'responses-profile',
-    apiKey: 'test-key',
-    apiMode: 'responses',
-    model: DEFAULT_RESPONSES_MODEL,
-  })
-
-  beforeEach(async () => {
-    await clearImages()
-    await putImage(imageA)
-    await putImage(imageB)
-    vi.mocked(callAgentResponsesApi).mockReset()
-    vi.mocked(callBatchImageSingle).mockReset().mockImplementation(callBatchImageSingleImplementation)
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        apiKey: 'test-key',
-        apiMode: 'responses',
-        model: DEFAULT_RESPONSES_MODEL,
-        profiles: [responsesProfile],
-        activeProfileId: responsesProfile.id,
-      }),
-      prompt: '继续生成',
-      inputImages: [],
-      maskDraft: null,
-      params: { ...DEFAULT_PARAMS },
-      appMode: 'agent',
-      tasks: [
-        task({ id: 'task-branch-a', outputImages: [imageA.id], sourceMode: 'agent', agentRoundId: 'round-2-a' }),
-        task({ id: 'task-branch-b', outputImages: [imageB.id], sourceMode: 'agent', agentRoundId: 'round-2-b' }),
-      ],
-      agentConversations: [agentConversation({
-        id: 'conversation-a',
-        activeRoundId: 'round-2-b',
-        rounds: [
-          {
-            id: 'round-1',
-            index: 1,
-            parentRoundId: null,
-            userMessageId: 'user-1',
-            assistantMessageId: 'assistant-1',
-            prompt: '画基础图',
-            inputImageIds: [],
-            outputTaskIds: [],
-            status: 'done',
-            error: null,
-            createdAt: 1,
-            finishedAt: 2,
-          },
-          {
-            id: 'round-2-a',
-            index: 2,
-            parentRoundId: 'round-1',
-            userMessageId: 'user-2-a',
-            assistantMessageId: 'assistant-2-a',
-            prompt: '分支 A',
-            inputImageIds: [],
-            outputTaskIds: ['task-branch-a'],
-            status: 'done',
-            error: null,
-            createdAt: 3,
-            finishedAt: 4,
-          },
-          {
-            id: 'round-2-b',
-            index: 2,
-            parentRoundId: 'round-1',
-            userMessageId: 'user-2-b',
-            assistantMessageId: 'assistant-2-b',
-            prompt: '分支 B',
-            inputImageIds: [],
-            outputTaskIds: ['task-branch-b'],
-            status: 'done',
-            error: null,
-            createdAt: 5,
-            finishedAt: 6,
-          },
-        ],
-        messages: [
-          { id: 'user-1', role: 'user', content: '画基础图', roundId: 'round-1', createdAt: 1 },
-          { id: 'assistant-1', role: 'assistant', content: '完成', roundId: 'round-1', createdAt: 2 },
-          { id: 'user-2-a', role: 'user', content: '分支 A', roundId: 'round-2-a', createdAt: 3 },
-          { id: 'assistant-2-a', role: 'assistant', content: '完成', roundId: 'round-2-a', outputTaskIds: ['task-branch-a'], createdAt: 4 },
-          { id: 'user-2-b', role: 'user', content: '分支 B', roundId: 'round-2-b', createdAt: 5 },
-          { id: 'assistant-2-b', role: 'assistant', content: '完成', roundId: 'round-2-b', outputTaskIds: ['task-branch-b'], createdAt: 6 },
-        ],
-      })],
-      activeAgentConversationId: 'conversation-a',
-      agentEditingRoundId: null,
-      showToast: vi.fn(),
-    })
-  })
-
-  it('resolves batch references from the active branch path only', async () => {
-    vi.mocked(callAgentResponsesApi)
-      .mockResolvedValueOnce({
-        text: '',
-        images: [],
-        outputItems: [{
-          type: 'function_call',
-          name: 'generate_image_batch',
-          call_id: 'batch-call',
-          arguments: JSON.stringify({
-            images: [{
-              id: 'next-image',
-              prompt: '参考 <ref id="round-2-image-1" /> 生成',
-            }],
-          }),
-        }],
-        responseId: 'response-1',
-      })
-      .mockResolvedValueOnce({
-        text: '完成',
-        images: [],
-        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '完成' }] }],
-        responseId: 'response-2',
-      })
-
-    await submitAgentMessage()
-
-    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
-    expect(callBatchImageSingle).toHaveBeenCalled()
-    const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
-    expect(batchArgs.referenceImageDataUrls).toEqual([imageB.dataUrl])
-    expect(batchArgs.referenceImageDataUrls).not.toContain(imageA.dataUrl)
-    expect(batchArgs.referenceIds).toEqual(['round-2-image-1'])
-  })
-
-  it('resolves batch references to current round input images', async () => {
-    useStore.setState({ inputImages: [imageA] })
-    vi.mocked(callAgentResponsesApi)
-      .mockResolvedValueOnce({
-        text: '',
-        images: [],
-        outputItems: [{
-          type: 'function_call',
-          name: 'generate_image_batch',
-          call_id: 'batch-call',
-          arguments: JSON.stringify({
-            images: [{
-              id: 'variant-image',
-              prompt: '参考 <ref id="round-3-reference-1" /> 生成变体',
-            }],
-          }),
-        }],
-        responseId: 'response-1',
-      })
-      .mockResolvedValueOnce({
-        text: '完成',
-        images: [],
-        outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '完成' }] }],
-        responseId: 'response-2',
-      })
-
-    await submitAgentMessage()
-
-    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
-    expect(callBatchImageSingle).toHaveBeenCalled()
-    const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
-    expect(batchArgs.referenceImageDataUrls).toEqual([imageA.dataUrl])
-    expect(batchArgs.referenceIds).toEqual(['round-3-reference-1'])
-  })
-
-  afterEach(async () => {
-    await vi.waitFor(() => {
-      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
-    })
-  })
-})
-
-describe('agent assistant regeneration', () => {
-  const responsesProfile = createDefaultOpenAIProfile({ id: 'openai-responses', apiKey: 'openai-key', apiMode: 'responses' })
-  let response: ReturnType<typeof deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>>
-
-  beforeEach(() => {
-    response = deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>()
-    vi.mocked(callAgentResponsesApi).mockReset().mockImplementation(() => response.promise)
-    useStore.setState({
-      settings: normalizeSettings({
-        ...DEFAULT_SETTINGS,
-        profiles: [responsesProfile],
-        activeProfileId: responsesProfile.id,
-        alwaysShowRetryButton: false,
-      }),
-      params: { ...DEFAULT_PARAMS, n: 4 },
-      agentEditingRoundId: 'round-a',
-      agentConversations: [
-        agentConversation({
-          id: 'conversation-a',
-          activeRoundId: 'round-a',
-          rounds: [{
-            id: 'round-a',
-            index: 1,
-            parentRoundId: null,
-            userMessageId: 'user-a',
-            assistantMessageId: 'assistant-a',
-            prompt: '画一只猫',
-            inputImageIds: [imageA.id],
-            outputTaskIds: [],
-            status: 'done',
-            error: null,
-            createdAt: 1,
-            finishedAt: 2,
-          }],
-          messages: [
-            { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', inputImageIds: [imageA.id], createdAt: 1 },
-            { id: 'assistant-a', role: 'assistant', content: '已完成。', roundId: 'round-a', createdAt: 2 },
-          ],
-        }),
-      ],
-      toast: null,
-      showToast: vi.fn(),
-      setConfirmDialog: vi.fn(),
-    })
-  })
-
-  afterEach(async () => {
-    response.resolve({
-      text: '已完成。',
-      images: [],
-      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已完成。' }] }],
-      responseId: 'response-regenerated',
-    })
-    await response.promise
-    await vi.waitFor(() => {
-      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
-    })
-  })
-
-  it('creates a sibling round from the assistant message regardless of retry setting', async () => {
-    await regenerateAgentAssistantMessage('conversation-a', 'round-a')
-
-    const conversation = useStore.getState().agentConversations[0]
-    const newRound = conversation.rounds.find((round) => round.id !== 'round-a')
-    expect(newRound).toMatchObject({
-      index: 1,
-      parentRoundId: null,
-      prompt: '画一只猫',
-      inputImageIds: [imageA.id],
-      status: 'running',
-      outputTaskIds: [],
-    })
-    expect(conversation.activeRoundId).toBe(newRound?.id)
-    expect(conversation.messages).toContainEqual(expect.objectContaining({
-      role: 'user',
-      content: '画一只猫',
-      roundId: newRound?.id,
-      inputImageIds: [imageA.id],
-    }))
-    expect(useStore.getState().agentEditingRoundId).toBeNull()
-  })
-
-  it('overwrites the same round when regenerating an error assistant message', async () => {
-    useStore.setState({
-      agentConversations: [
-        agentConversation({
-          id: 'conversation-a',
-          activeRoundId: 'round-a',
-          rounds: [{
-            id: 'round-a',
-            index: 1,
-            parentRoundId: null,
-            userMessageId: 'user-a',
-            assistantMessageId: 'assistant-a',
-            prompt: '画一只猫',
-            inputImageIds: [imageA.id],
-            outputTaskIds: ['task-a'],
-            status: 'error',
-            error: '失败',
-            createdAt: 1,
-            finishedAt: 2,
-          }],
-          messages: [
-            { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', inputImageIds: [imageA.id], createdAt: 1 },
-            { id: 'assistant-a', role: 'assistant', content: '请求失败：失败', roundId: 'round-a', outputTaskIds: ['task-a'], createdAt: 2 },
-          ],
-        }),
-      ],
-    })
-
-    await regenerateAgentAssistantMessage('conversation-a', 'round-a')
-
-    const conversation = useStore.getState().agentConversations[0]
-    expect(conversation.rounds).toHaveLength(1)
-    expect(conversation.activeRoundId).toBe('round-a')
-    expect(conversation.rounds[0]).toMatchObject({
-      id: 'round-a',
-      status: 'running',
-      error: null,
-      outputTaskIds: [],
-      finishedAt: null,
-    })
-    expect(conversation.messages.find((message) => message.id === 'assistant-a')).toMatchObject({
-      content: '',
-      outputTaskIds: [],
-    })
-  })
-})
-
 describe('reused task API profile', () => {
   const openaiProfile = createDefaultOpenAIProfile({ id: 'openai-profile', apiKey: 'openai-key' })
   const falProfile = createDefaultFalProfile({ id: 'fal-profile', name: 'fal 配置', apiKey: 'fal-key' })
@@ -5679,17 +4029,6 @@ describe('task failure notification', () => {
     expect(showBrowserNotification).toHaveBeenCalledWith('批量生成完成', { body: '批量生成完成：成功 1 条，失败 1 条。', tag: 'task-completion' })
   })
 
-  it('notifies an Agent reply failure', async () => {
-    useStore.setState({ appMode: 'agent' })
-    vi.mocked(callAgentResponsesApi).mockRejectedValueOnce(new Error('模型不可用'))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'error' }))
-
-    expect(showBrowserNotification).toHaveBeenCalledOnce()
-    expect(showBrowserNotification).toHaveBeenCalledWith('Agent 回复失败', { body: '请回到应用查看详情。', tag: 'task-failure' })
-  })
-
   it('notifies when a recovered fal task finally fails', async () => {
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
     useStore.setState({ settings: normalizeSettings({ ...useStore.getState().settings, profiles: [falProfile], activeProfileId: falProfile.id }) })
@@ -5734,83 +4073,6 @@ describe('task failure notification', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
-
-  it('only reports the Agent round when its image task fails', async () => {
-    const textProfile = createDefaultOpenAIProfile({ id: 'agent-text-profile', apiKey: 'text-key', apiMode: 'responses' })
-    const imageProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
-    useStore.setState({
-      settings: normalizeSettings({
-        ...useStore.getState().settings,
-        profiles: [textProfile, imageProfile],
-        activeProfileId: textProfile.id,
-        agentApiConfigMode: 'hybrid',
-        agentTextProfileId: textProfile.id,
-        agentImageProfileId: imageProfile.id,
-      }),
-      agentConversations: [],
-    })
-    await putDbTask(task({
-      id: 'agent-fal-task',
-      apiProvider: 'fal',
-      apiProfileId: imageProfile.id,
-      status: 'error',
-      error: '与 fal.ai 的连接已断开，之后会继续查询任务结果。',
-      falRequestId: 'fal-request-id',
-      falEndpoint: 'fal-endpoint',
-      falRecoverable: true,
-      sourceMode: 'agent',
-      agentConversationId: 'conversation-a',
-      agentRoundId: 'round-a',
-      agentMessageId: 'assistant-a',
-      agentToolCallId: 'tool-a',
-    }))
-    await putAgentConversation(agentConversation({
-      id: 'conversation-a',
-      activeRoundId: 'round-a',
-      rounds: [{
-        id: 'round-a',
-        index: 1,
-        parentRoundId: null,
-        userMessageId: 'user-a',
-        assistantMessageId: 'assistant-a',
-        prompt: '画一只猫',
-        inputImageIds: [],
-        outputTaskIds: ['agent-fal-task'],
-        responseOutput: [{ type: 'function_call', name: 'generate_image', call_id: 'tool-a', arguments: JSON.stringify({ id: 'cat', prompt: '画一只猫' }) }],
-        status: 'running',
-        error: null,
-        createdAt: 1,
-        finishedAt: null,
-      }],
-      messages: [
-        { id: 'user-a', role: 'user', content: '画一只猫', roundId: 'round-a', createdAt: 1 },
-        { id: 'assistant-a', role: 'assistant', content: '', roundId: 'round-a', outputTaskIds: ['agent-fal-task'], createdAt: 2 },
-      ],
-    }))
-    vi.mocked(getFalQueuedImageResult).mockRejectedValueOnce(new Error('quota exceeded'))
-
-    await initStore()
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]).toMatchObject({ status: 'error', error: 'quota exceeded' }))
-
-    expect(showBrowserNotification).toHaveBeenCalledOnce()
-    expect(showBrowserNotification).toHaveBeenCalledWith('Agent 回复失败', expect.objectContaining({ tag: 'task-failure' }))
-    expect(showBrowserNotification).not.toHaveBeenCalledWith('图像生成失败', expect.anything())
-  })
-
-  it('does not notify when the user stops an Agent reply', async () => {
-    useStore.setState({ appMode: 'agent' })
-    vi.mocked(callAgentResponsesApi).mockImplementationOnce((opts) => new Promise((_, reject) => {
-      opts.signal?.addEventListener('abort', () => reject(new DOMException('Agent 请求已停止', 'AbortError')), { once: true })
-    }))
-
-    await submitAgentMessage()
-    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledOnce())
-    stopAgentResponse('conversation-a')
-    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]).toMatchObject({ status: 'error', error: '已停止生成。' }))
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(showBrowserNotification).not.toHaveBeenCalled()
   })
 })
 
@@ -5888,5 +4150,50 @@ describe('client connection errors', () => {
     const error = useStore.getState().tasks[0].error!
     if (hinted) expect(error.startsWith(`${reason}\n提示：请求等待约 60 秒后被断开`)).toBe(true)
     else expect(error).toBe(reason)
+  })
+})
+
+describe('gallery-only execution boundaries', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearAgentConversations()
+    vi.mocked(callAgentResponsesApi).mockClear()
+    vi.mocked(callImageApi).mockClear()
+    vi.mocked(getFalQueuedImageResult).mockClear()
+    useStore.setState({ appMode: 'gallery', settings: normalizeSettings(DEFAULT_SETTINGS), tasks: [], agentConversations: [], agentInputDrafts: {}, prompt: '' })
+  })
+
+  it('rejects Agent mode and makes old submit/regenerate entry points inert', async () => {
+    const archived = agentConversation({ id: 'archived' })
+    useStore.setState({ agentConversations: [archived], activeAgentConversationId: archived.id, prompt: 'preserved' })
+    useStore.getState().setAppMode('agent')
+    expect(useStore.getState().appMode).toBe('gallery')
+    await submitAgentMessage()
+    await regenerateAgentAssistantMessage(archived.id, 'old-round')
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().agentConversations).toEqual([archived])
+    expect(useStore.getState().prompt).toBe('preserved')
+  })
+
+  it.each([{ sourceMode: 'agent' as const }, { agentConversationId: 'old-conversation' }, { agentRoundId: 'old-round' }])('does not poll archived Agent tasks identified by %j', async (identity) => {
+    const profile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'test-key' })
+    useStore.setState({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }) })
+    const archived = task({ id: 'archived-fal', apiProvider: 'fal', apiProfileId: profile.id, status: 'error', falRecoverable: true, falRequestId: 'old-request', falEndpoint: 'old-endpoint', ...identity })
+    await putDbTask(archived)
+    await initStore()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(getFalQueuedImageResult).not.toHaveBeenCalled()
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks.find((entry) => entry.id === archived.id)).toMatchObject(identity)
+  })
+
+  it('keeps optimizer off for legacy settings and resets consent after destination edits', () => {
+    expect(useStore.getState().settings.promptOptimization?.enabled).toBe(false)
+    const profile = useStore.getState().settings.profiles[0]
+    useStore.getState().setSettings({ promptOptimization: { enabled: true, profileId: profile.id, model: 'text-model', allowUnknownModel: true } })
+    expect(useStore.getState().settings.promptOptimization?.enabled).toBe(true)
+    useStore.getState().setSettings({ profiles: [{ ...profile, baseUrl: 'https://changed.example/v1' }] })
+    expect(useStore.getState().settings.promptOptimization).toMatchObject({ enabled: false, allowUnknownModel: false })
   })
 })

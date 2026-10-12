@@ -1,5 +1,5 @@
 ; 基于 tauri-cli 2.12.1 内置的 NSIS 模板，由 tauri.conf.json 的 bundle.windows.nsis.template 引用。
-; 改动处均以“GPT Image Playground：”注释标出，升级 Tauri CLI 时需对照新版内置模板同步。
+; 改动处均以“Open Image Playground：”注释标出，升级 Tauri CLI 时需对照新版内置模板同步。
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -389,7 +389,7 @@ FunctionEnd
 
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-; GPT Image Playground：所选目录下已有不属于本应用的 data 文件夹（没有 data.db、download-dir.txt 和 webview）时阻止继续。
+; Open Image Playground：所选目录下已有不属于本应用的 data 文件夹（没有 data.db、download-dir.txt 和 webview）时阻止继续。
 ; 应用数据固定在 <安装目录>\data，误用用户自己的 data 文件夹会混入应用数据，卸载勾选删除数据时也会把它删掉
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE InstallDirPageLeave
 !insertmacro MUI_PAGE_DIRECTORY
@@ -403,7 +403,7 @@ Function InstallDirPageLeave
   ${EndIf}
 FunctionEnd
 
-; GPT Image Playground：默认保存地址页。
+; Open Image Playground：默认保存地址页。
 ; 客户端“文件保存位置”为“默认地址”时使用该目录，安装时写入 <安装目录>\data\download-dir.txt。
 ; 被动（/P，应用内更新使用）、更新（/UPDATE）和静默安装不显示；安装目录中已有数据或该文件、
 ; 或数据目录已在客户端中改到别处（存在 data-dir）时也不显示，不写入，保留用户之前的选择
@@ -836,7 +836,7 @@ Section Install
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
 
-  ; GPT Image Playground：写入默认保存地址页选择的目录，一行绝对路径，UTF-8 无 BOM。
+  ; Open Image Playground：写入默认保存地址页选择的目录，一行绝对路径，UTF-8 无 BOM。
   ; NSIS 的 FileWrite 只能写系统 ANSI 编码，中文路径需先转为 UTF-8 再写入
   ${If} $DownloadDir != ""
     CreateDirectory "$INSTDIR\data"
@@ -1007,7 +1007,7 @@ Section Uninstall
     DeleteRegKey /ifempty HKCU "${MANUKEY}"
 
     SetShellVarContext current
-    ; GPT Image Playground：应用数据都在数据目录中，只删除它；
+    ; Open Image Playground：应用数据都在数据目录中，只删除它；
     ; downloads 和另选的保存目录中是用户保存的图片与备份，任何情况下都不删除。
     ; 在客户端中更改过数据目录时，<安装目录>\data-dir 中是新位置：一行路径，UTF-8 无 BOM，
     ; 可能省略盘符（以 \ 开头，U 盘安装时），读取时补上安装目录的盘符。该目录由用户选择，可能还放了别的东西，

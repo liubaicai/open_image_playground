@@ -1,7 +1,7 @@
 [package]
 name = "gpt-image-playground"
-version = "0.8.0"
-description = "GPT Image Playground"
+version = "0.8.1"
+description = "Open Image Playground"
 edition = "2021"
 
 [lib]

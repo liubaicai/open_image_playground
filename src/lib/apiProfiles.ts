@@ -1,3 +1,4 @@
+import { normalizePromptOptimizationConfig } from '../extensions/promptOptimization/settings'
 import type {
   ApiMode,
   ApiProfile,
@@ -26,6 +27,7 @@ import { isImportableConfigUrl } from './importableConfigUrl'
 import { DEFAULT_IMAGES_MODEL } from './imageModels'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from './batchPrompts'
 import { normalizeFontMode } from './fonts'
+import { getEnabledProfileModels, normalizeEnabledModels } from '../extensions/imageProviders/modelPreferences'
 
 const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL)
@@ -38,11 +40,12 @@ const DEFAULT_BASE_URL = DEFAULT_API_URL_PATCH?.baseUrl ?? ''
 export { DEFAULT_IMAGES_MODEL } from './imageModels'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-6.1-sol'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
+export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
-const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'sb2api-async', 'fal'])
+const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'sb2api-async', 'fal', 'openrouter'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
   editPath: 'images/edits',
@@ -148,7 +151,7 @@ function normalizeZipDownloadRoutes(value: unknown) {
 function normalizeProviderOrder(value: unknown, customProviders: CustomProviderDefinition[]): string[] | undefined {
   if (!Array.isArray(value)) return undefined
 
-  const providerIds = ['openai', 'sb2api-async', 'fal', ...customProviders.map((provider) => provider.id)]
+  const providerIds = ['openai', 'sb2api-async', 'fal', 'openrouter', ...customProviders.map((provider) => provider.id)]
   const knownIds = new Set(providerIds)
   const ordered = value
     .map(String)
@@ -413,12 +416,34 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
   }
 }
 
+export function createDefaultOpenRouterProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return createDefaultOpenAIProfile({
+    id: `openrouter-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: 'OpenRouter',
+    apiKey: '',
+    imageGenerationModel: '',
+    reasoningEffort: undefined,
+    provider: 'openrouter',
+    baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+    model: '',
+    enabledModels: [],
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    streamImages: false,
+    transparentBackgroundMethod: 'local',
+    ...overrides,
+  })
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
     [profile.provider]: {
       baseUrl: profile.baseUrl,
       model: profile.model,
+      enabledModels: profile.enabledModels,
+      selectedModel: profile.selectedModel,
       imageGenerationModel: profile.imageGenerationModel,
       apiMode: profile.apiMode,
       reasoningEffort: profile.reasoningEffort,
@@ -431,10 +456,29 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     },
   }
   const savedDraft = providerDrafts[provider]
+  // 不把其他服务商的密钥带到 OpenRouter，反向切换也一样。
+  const apiKey = profile.provider !== provider && (profile.provider === 'openrouter' || provider === 'openrouter') ? '' : profile.apiKey
+  const modelPreferences = { enabledModels: savedDraft?.enabledModels, selectedModel: savedDraft?.selectedModel }
+
+  if (provider === 'openrouter') {
+    return {
+      ...profile,
+      ...createDefaultOpenRouterProfile({ id: profile.id, name: profile.name }),
+      ...modelPreferences,
+      provider,
+      apiKey,
+      baseUrl: DEFAULT_OPENROUTER_BASE_URL,
+      model: savedDraft?.model ?? '',
+      enabledModels: savedDraft?.enabledModels ?? [],
+      providerDrafts,
+    }
+  }
 
   if (provider === 'fal') {
     return {
       ...profile,
+      ...modelPreferences,
+      apiKey,
       provider,
       baseUrl: savedDraft?.baseUrl ?? DEFAULT_FAL_BASE_URL,
       model: savedDraft?.model ?? DEFAULT_FAL_MODEL,
@@ -456,6 +500,8 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     const supportsNativeTransparentBackground = customProviderSupportsNativeTransparentBackground(customProvider)
     return {
       ...profile,
+      ...modelPreferences,
+      apiKey,
       provider: customProvider.id,
       baseUrl: savedDraft?.baseUrl ?? (shouldUseOpenAIDefaults ? DEFAULT_BASE_URL : profile.baseUrl || DEFAULT_BASE_URL),
       model: savedDraft?.model ?? (shouldUseOpenAIDefaults ? DEFAULT_IMAGES_MODEL : profile.model || DEFAULT_IMAGES_MODEL),
@@ -482,6 +528,8 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
 
   return {
     ...profile,
+    ...modelPreferences,
+    apiKey,
     provider,
     baseUrl: savedDraft?.baseUrl ?? DEFAULT_BASE_URL,
     model: savedDraft?.model ?? DEFAULT_IMAGES_MODEL,
@@ -505,10 +553,11 @@ function normalizeProviderDraft(
   nativeTransparentProviderIds: Set<string>,
 ): ApiProfileProviderDraft {
   if (!isRecord(input)) return undefined
-  const nativeTransparentBackgroundUnavailable = customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider)
+  const nativeTransparentBackgroundUnavailable = provider === 'openrouter' || (customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider))
   const transparentBackgroundMethod = nativeTransparentBackgroundUnavailable ? 'local' : 'api'
   const fallback = provider === 'fal'
     ? createDefaultFalProfile()
+    : provider === 'openrouter' ? createDefaultOpenRouterProfile()
     : createDefaultOpenAIProfile({ transparentBackgroundMethod })
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = (typeof input.model === 'string' && normalizeModelList(input.model)) || undefined
@@ -522,6 +571,8 @@ function normalizeProviderDraft(
       ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
       : baseUrl,
     model,
+    enabledModels: normalizeEnabledModels(input.enabledModels),
+    selectedModel: typeof input.selectedModel === 'string' ? input.selectedModel.trim() : undefined,
     imageGenerationModel,
     apiMode,
     reasoningEffort: normalizeReasoningEffort(input.reasoningEffort),
@@ -564,12 +615,13 @@ export function normalizeApiProfile(
     : fallback
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(providerFallback)
+    : provider === 'openrouter' ? createDefaultOpenRouterProfile(providerFallback)
     : createDefaultOpenAIProfile({ ...providerFallback, apiMode })
   const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
   const streamImages = provider === 'openai'
     ? typeof record.streamImages === 'boolean' ? record.streamImages : defaults.streamImages
     : false
-  const nativeTransparentBackgroundUnavailable = customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider)
+  const nativeTransparentBackgroundUnavailable = provider === 'openrouter' || (customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider))
 
   return {
     ...defaults,
@@ -578,9 +630,10 @@ export function normalizeApiProfile(
     name: typeof record.name === 'string' && record.name.trim() ? record.name : defaults.name,
     description: typeof record.description === 'string' && record.description.trim() ? record.description : undefined,
     provider,
-    baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') : rawBaseUrl,
+    baseUrl: provider === 'openrouter' ? DEFAULT_OPENROUTER_BASE_URL : provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: (typeof record.model === 'string' && normalizeModelList(record.model)) || defaults.model,
+    enabledModels: normalizeEnabledModels(record.enabledModels),
     selectedModel: typeof record.selectedModel === 'string' && record.selectedModel.trim() ? record.selectedModel.trim() : undefined,
     imageGenerationModel: typeof record.imageGenerationModel === 'string'
       ? record.imageGenerationModel.trim()
@@ -588,8 +641,8 @@ export function normalizeApiProfile(
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
     reasoningEffort: normalizeReasoningEffort(record.reasoningEffort, defaults.reasoningEffort),
-    codexCli: Boolean(record.codexCli),
-    apiProxy: provider === 'sb2api-async' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
+    codexCli: provider === 'openrouter' ? false : Boolean(record.codexCli),
+    apiProxy: provider === 'openrouter' || provider === 'sb2api-async' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
     streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, defaults.streamPartialImages),
@@ -721,6 +774,7 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     : active.id
 
   return {
+    promptOptimization: normalizePromptOptimizationConfig(record.promptOptimization, profiles),
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
     model: active.model,
@@ -787,6 +841,7 @@ export function getCustomProviderDefinition(settings: Partial<AppSettings> | unk
 }
 
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
+  if (provider === 'openrouter') return 'OpenRouter'
   if (provider === 'fal') return 'fal.ai'
   if (provider === 'openai') return 'OpenAI'
   if (provider === 'sb2api-async') return SUB2API_PROVIDER.name
@@ -909,8 +964,8 @@ export function normalizeModelList(value: string) {
 
 /** 将模型列表解析为实际请求使用的单个模型，优先使用 preferred，其次是首页选中的模型 */
 export function resolveApiProfileModel(profile: ApiProfile, preferred?: string): ApiProfile {
-  const models = splitModelList(profile.model)
-  const model = [preferred, profile.selectedModel].find((item) => item && models.includes(item)) ?? models[0] ?? profile.model
+  const models = getEnabledProfileModels(profile)
+  const model = [preferred, profile.selectedModel].find((item) => item && models.includes(item)) ?? models[0] ?? ''
   return { ...profile, model }
 }
 
@@ -940,6 +995,7 @@ export function validateApiProfile(profile: ApiProfile): string | null {
   if (!profile.name.trim()) return '缺少名称'
   if (profile.provider !== 'fal' && !profile.baseUrl.trim() && !shouldUseApiProxy(profile.apiProxy)) return '缺少 API URL'
   if (!profile.apiKey.trim()) return '缺少 API Key'
+  if (profile.enabledModels?.length === 0) return '请至少启用一个模型'
   if (!profile.model.trim()) return '缺少模型 ID'
   return null
 }

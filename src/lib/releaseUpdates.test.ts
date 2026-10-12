@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   compareVersions,
+  getReleasesApiUrl,
   isReleaseCacheFresh,
   MANUAL_CHECK_MIN_INTERVAL_MS,
   mergeReleasePage,
   parseReleaseCache,
   parseReleasePage,
   RELEASE_CACHE_TTL_MS,
+  RELEASE_REPO,
+  RELEASES_PAGE_URL,
   RELEASES_PER_PAGE,
   shouldShowUpdate,
   stripReleaseHeading,
@@ -16,7 +19,7 @@ const rawRelease = (tag: string, extra: Record<string, unknown> = {}) => ({
   tag_name: tag,
   body: `## ${tag}`,
   published_at: '2026-10-08T12:00:00Z',
-  html_url: `https://github.com/CookSleep/gpt_image_playground/releases/tag/${tag}`,
+  html_url: `https://github.com/liubaicai/open_image_playground/releases/tag/${tag}`,
   ...extra,
 })
 
@@ -26,6 +29,14 @@ const release = (version: string) => ({
   body: '',
   publishedAt: '',
   url: 'https://github.com/',
+})
+
+describe('Release 仓库', () => {
+  it('使用当前分支仓库的 API 和发布页面', () => {
+    expect(RELEASE_REPO).toBe('liubaicai/open_image_playground')
+    expect(RELEASES_PAGE_URL).toBe('https://github.com/liubaicai/open_image_playground/releases')
+    expect(getReleasesApiUrl(2)).toBe('https://api.github.com/repos/liubaicai/open_image_playground/releases?per_page=10&page=2')
+  })
 })
 
 describe('compareVersions', () => {
@@ -56,10 +67,10 @@ describe('parseReleasePage', () => {
       version: '0.8.0',
       body: '## v0.8.0',
       publishedAt: '2026-10-08T12:00:00Z',
-      url: 'https://github.com/CookSleep/gpt_image_playground/releases/tag/v0.8.0',
+      url: 'https://github.com/liubaicai/open_image_playground/releases/tag/v0.8.0',
     })
     // 非 https 的链接替换为仓库的 Release 页面
-    expect(result.releases[1].url).toBe('https://github.com/CookSleep/gpt_image_playground/releases/tag/v0.7.17')
+    expect(result.releases[1].url).toBe('https://github.com/liubaicai/open_image_playground/releases/tag/v0.7.17')
   })
 
   it('不是数组时抛出错误', () => {

@@ -1,0 +1,16 @@
+services:
+  open-image-playground:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: open-image-playground:shared-storage
+    container_name: open-image-playground
+    ports:
+      - "28080:80"
+    environment:
+      STORAGE_USERNAME: ${STORAGE_USERNAME:-admin}
+      STORAGE_PASSWORD: ${STORAGE_PASSWORD:?Set STORAGE_PASSWORD in a private .env file}
+      STORAGE_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

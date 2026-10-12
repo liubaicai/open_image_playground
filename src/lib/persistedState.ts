@@ -2,7 +2,7 @@ import type { AgentConversation, AgentInputDraft, AppMode, AppSettings, Favorite
 import { normalizePresetAgent, normalizeSettings } from './apiProfiles'
 import { normalizeAgentConversations } from './agentConversationState'
 import { ensureDefaultFavoriteCollection, normalizeFavoriteCollections, resolveDefaultFavoriteCollectionId } from './favoriteState'
-import { cleanStaleAgentInputDrafts, getPersistableAgentInputDrafts, isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDrafts, normalizeAgentInputDraftsByKey, saveGalleryInputDraft } from './inputDraftState'
+import { isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDraftsByKey, saveActiveAgentInputDrafts, saveGalleryInputDraft } from './inputDraftState'
 import { getPersistableAgentConversations, stripPersistedAgentConversations } from './agentResponseState'
 
 export interface PersistedAppState {
@@ -92,6 +92,8 @@ function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
 export function createPersistedState(state: PersistedStateSource, includeLegacyAgentConversations = false): PersistedAppState {
   const settings = normalizeSettings(state.settings)
   const galleryInputDraft = saveGalleryInputDraft(state)
+  // 旧 Agent 草稿只归档，保存画廊设置时不按会话加载状态或过期时间删除它们。
+  const agentInputDrafts = settings.persistInputOnRestart ? saveActiveAgentInputDrafts(state) : state.agentInputDrafts
   return {
     settings,
     previousPresetConfig: state.previousPresetConfig ?? null,
@@ -105,7 +107,7 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
         }
       : {}),
     dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
-    appMode: state.appMode,
+    appMode: 'gallery',
     galleryInputDraft: settings.persistInputOnRestart && galleryInputDraft
       ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) }
       : null,
@@ -113,7 +115,10 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
       ? { agentConversations: getPersistableAgentConversations(state.agentConversations) }
       : {}),
     activeAgentConversationId: state.activeAgentConversationId,
-    agentInputDrafts: settings.persistInputOnRestart ? getPersistableAgentInputDrafts(state) : {},
+    agentInputDrafts: Object.fromEntries(Object.entries(agentInputDrafts).map(([id, draft]) => [id, {
+      ...draft,
+      inputImages: draft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })),
+    }])),
     agentSidebarCollapsed: state.agentSidebarCollapsed,
     agentAssetTab: state.agentAssetTab,
     agentAssetPanelCollapsed: state.agentAssetPanelCollapsed,
@@ -161,24 +166,19 @@ export function normalizePersistedState(
   )
     ? persistedState.activeAgentConversationId
     : agentConversations[0]?.id ?? null
-  const appMode = persistedState.appMode === 'agent' ? 'agent' : 'gallery'
+  const wasAgentMode = persistedState.appMode === 'agent'
   const galleryInputDraft = settings.persistInputOnRestart
-    ? normalizeAgentInputDraft(persistedState.galleryInputDraft ?? {
+    ? normalizeAgentInputDraft(persistedState.galleryInputDraft ?? (wasAgentMode ? null : {
         prompt: persistedState.prompt,
         inputImages: persistedState.inputImages,
         maskDraft: null,
         maskEditorImageId: null,
-      }, now)
+      }), now)
     : null
-  const normalizedAgentInputDrafts = !settings.persistInputOnRestart
-    ? {}
-    : hasLegacyAgentConversations
-      ? normalizeAgentInputDrafts(persistedState.agentInputDrafts, agentConversations)
-      : normalizeAgentInputDraftsByKey(persistedState.agentInputDrafts)
-  const cleanedAgentInputDrafts = cleanStaleAgentInputDrafts(normalizedAgentInputDrafts, activeAgentConversationId, now)
-  const agentInputDrafts = appMode === 'agent' && activeAgentConversationId && !cleanedAgentInputDrafts[activeAgentConversationId] && settings.persistInputOnRestart && typeof persistedState.prompt === 'string'
+  const normalizedAgentInputDrafts = normalizeAgentInputDraftsByKey(persistedState.agentInputDrafts)
+  const agentInputDrafts = wasAgentMode && activeAgentConversationId && !normalizedAgentInputDrafts[activeAgentConversationId] && settings.persistInputOnRestart && typeof persistedState.prompt === 'string'
     ? {
-        ...cleanedAgentInputDrafts,
+        ...normalizedAgentInputDrafts,
         [activeAgentConversationId]: normalizeAgentInputDraft({
           prompt: persistedState.prompt,
           inputImages: persistedState.inputImages,
@@ -186,10 +186,7 @@ export function normalizePersistedState(
           maskEditorImageId: null,
         }, now),
       }
-    : cleanedAgentInputDrafts
-  const restoredAgentDraft = settings.persistInputOnRestart && appMode === 'agent' && activeAgentConversationId
-    ? agentInputDrafts[activeAgentConversationId] ?? null
-    : null
+    : normalizedAgentInputDrafts
   const favoriteCollections = Array.isArray(persistedState.favoriteCollections)
     ? ensureDefaultFavoriteCollection(normalizeFavoriteCollections(persistedState.favoriteCollections, now), now)
     : fallback.favoriteCollections
@@ -205,7 +202,7 @@ export function normalizePersistedState(
       dismissedPresetProviderIds: normalizeStringArray(persistedState.dismissedPresetProviderIds, fallback.dismissedPresetProviderIds ?? []),
       params: normalizeParams(persistedState.params, fallback.params),
       dismissedCodexCliPrompts: normalizeStringArray(persistedState.dismissedCodexCliPrompts, fallback.dismissedCodexCliPrompts),
-      appMode,
+      appMode: 'gallery',
       galleryInputDraft: galleryInputDraft && !isEmptyAgentInputDraft(galleryInputDraft) ? galleryInputDraft : null,
       agentConversations,
       activeAgentConversationId,
@@ -218,10 +215,10 @@ export function normalizePersistedState(
       supportPromptDismissed: Boolean(persistedState.supportPromptDismissed),
       supportPromptOpen: Boolean(persistedState.supportPromptOpen),
       supportPromptSkippedForImportedData: Boolean(persistedState.supportPromptSkippedForImportedData),
-      prompt: restoredAgentDraft ? restoredAgentDraft.prompt : galleryInputDraft?.prompt ?? '',
-      inputImages: restoredAgentDraft ? restoredAgentDraft.inputImages : galleryInputDraft?.inputImages ?? [],
-      maskDraft: restoredAgentDraft ? restoredAgentDraft.maskDraft : galleryInputDraft?.maskDraft ?? null,
-      maskEditorImageId: restoredAgentDraft ? restoredAgentDraft.maskEditorImageId : galleryInputDraft?.maskEditorImageId ?? null,
+      prompt: galleryInputDraft?.prompt ?? '',
+      inputImages: galleryInputDraft?.inputImages ?? [],
+      maskDraft: galleryInputDraft?.maskDraft ?? null,
+      maskEditorImageId: galleryInputDraft?.maskEditorImageId ?? null,
     },
     hasLegacyAgentConversations,
     shouldMigrateAgentConversations: hasLegacyAgentConversations && agentConversations.length > 0,

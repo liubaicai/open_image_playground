@@ -1,6 +1,8 @@
 import type { StoredImage, StoredImageThumbnail } from '../types'
 import * as indexedDbBackend from './dbIndexedDb'
+import * as serverBackend from './dbServer'
 import * as tauriBackend from './dbTauri'
+import { isDockerSharedStorage } from './dockerStorage'
 import { isTauri } from './platform'
 
 const THUMBNAIL_MAX_SIZE = 720
@@ -10,7 +12,7 @@ const THUMBNAIL_VERSION = 2
 export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
 // 底层存取按平台转发：网页版用 IndexedDB，客户端用 Rust 侧的 SQLite 与图片文件；标注类型以约束两套实现接口一致
-const backend: typeof indexedDbBackend = isTauri ? tauriBackend : indexedDbBackend
+const backend: typeof indexedDbBackend = isTauri ? tauriBackend : isDockerSharedStorage ? serverBackend : indexedDbBackend
 
 export const {
   getAllTasks,

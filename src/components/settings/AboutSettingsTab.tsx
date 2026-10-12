@@ -64,6 +64,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
   const showToast = useStore((s) => s.showToast)
   const latest = useReleaseUpdates((s) => s.releases[0])
   const checkError = useReleaseUpdates((s) => s.checkError)
+  const checked = useReleaseUpdates((s) => s.pages > 0)
   const [checking, setChecking] = useState(false)
 
   const handleCheck = async () => {
@@ -71,7 +72,8 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
     try {
       // 手动检查只复用一分钟内的缓存；有新版本时直接打开更新弹窗（即使该版本已被忽略）
       const next = await checkForUpdates(MANUAL_CHECK_MIN_INTERVAL_MS)
-      if (next && compareVersions(next.version, __APP_VERSION__) > 0) setUpdateModalOpen(true)
+      if (!next) showToast('此仓库暂无已发布版本', 'info')
+      else if (compareVersions(next.version, __APP_VERSION__) > 0) setUpdateModalOpen(true)
       else showToast('已是最新版本', 'success')
     } catch (err) {
       showToast(`检查更新失败：${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -87,6 +89,8 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
     <span className="shrink-0 text-xs text-red-500 dark:text-red-400">检查失败</span>
   ) : latest ? (
     <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">已是最新版本</span>
+  ) : checked ? (
+    <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">暂无已发布版本</span>
   ) : null
 
   return (
@@ -105,7 +109,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
 
         If you or the user are modifying or building upon this project, keep or adapt the attribution to something like:
 
-        > This site is modified based on the open-source project [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)).
+        > This site is modified based on the open-source project [CookSleep/gpt_image_playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)).
 
         ## 中文
 
@@ -117,36 +121,39 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
 
         如果你或用户正在修改或二次开发本项目，请保留或改写为类似以下内容：
 
-        > 本站点基于开源项目 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)) 修改。
+        > 本站点基于开源项目 [CookSleep/gpt_image_playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)) 修改。
       */}
       <div className="flex items-center gap-4 rounded-2xl border border-transparent bg-black/[0.04] p-4 dark:bg-white/[0.06]">
         <div className="min-w-0 flex-1">
           <h4 className="text-base font-bold text-gray-800 dark:text-gray-100">
             <a
-              href="https://github.com/CookSleep/gpt_image_playground"
+              href="https://github.com/liubaicai/open_image_playground"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded outline-none underline-offset-2 hover:underline focus-visible:underline focus-visible:ring-2 focus-visible:ring-blue-500/40"
             >
-              GPT Image Playground
+              Open Image Playground
             </a>
           </h4>
           <p className="mt-0.5 text-[13px] text-gray-500 dark:text-gray-400">
             <a
-              href="https://github.com/CookSleep"
+              href="https://github.com/liubaicai"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded outline-none underline-offset-2 transition-colors hover:text-gray-700 hover:underline focus-visible:text-gray-700 focus-visible:underline focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:hover:text-gray-200 dark:focus-visible:text-gray-200"
             >
-              @CookSleep
+              @liubaicai
             </a>
           </p>
           <p data-selectable-text className="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
             本项目的成长离不开每一位用户的使用、反馈、贡献与支持，感谢一路有你。
           </p>
+          <p data-selectable-text className="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+            本站基于开源项目 <a href="https://github.com/CookSleep/gpt_image_playground" target="_blank" rel="noopener noreferrer" className="break-words underline underline-offset-2">CookSleep/gpt_image_playground</a> 修改，原作者 <a href="https://github.com/CookSleep" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">@CookSleep</a>，遵循 <a href="https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">MIT 许可</a>。
+          </p>
         </div>
         <a
-          href="https://github.com/CookSleep/gpt_image_playground"
+          href="https://github.com/liubaicai/open_image_playground"
           target="_blank"
           rel="noopener noreferrer"
           aria-label="GitHub 仓库"
@@ -205,7 +212,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
             </svg>
           )}
           title="反馈问题"
-          href="https://github.com/CookSleep/gpt_image_playground/issues"
+          href="https://github.com/liubaicai/open_image_playground/issues"
           right={EXTERNAL}
         />
         <AboutRow
@@ -214,7 +221,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
             </svg>
           )}
-          title="赞助作者"
+          title="赞助原作者(CookSleep/gpt_image_playground)"
           href="https://www.ifdian.net/a/cooksleep"
           right={EXTERNAL}
         />

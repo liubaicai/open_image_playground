@@ -169,10 +169,12 @@ describe('persisted state codec', () => {
     expect(result.state.activeAgentConversationId).toBe('conversation-a')
     expect(result.state.agentConversations[0].rounds[0]).toMatchObject({ status: 'error', error: '上次请求已中断' })
     expect(result.state.agentInputDrafts['conversation-a']).toMatchObject({ prompt: '旧版 Agent 草稿', inputImages: [imageA] })
-    expect(result.state.prompt).toBe('旧版 Agent 草稿')
+    expect(result.state.appMode).toBe('gallery')
+    expect(result.state.prompt).toBe('')
+    expect(result.state.inputImages).toEqual([])
   })
 
-  it('persists gallery and Agent drafts only when input persistence is enabled', () => {
+  it('persists gallery input when enabled and preserves archived Agent drafts', () => {
     const previousPresetConfig = {
       customProviders: [],
       profiles: [DEFAULT_SETTINGS.profiles[0]],
@@ -196,7 +198,7 @@ describe('persisted state codec', () => {
       prompt: '不应持久化的可见 Agent 输入',
       agentInputDrafts: {
         'conversation-a': {
-          prompt: '不应持久化的 Agent 草稿',
+          prompt: '已归档的 Agent 草稿',
           inputImages: [imageA],
           maskDraft: null,
           maskEditorImageId: null,
@@ -230,7 +232,8 @@ describe('persisted state codec', () => {
     expect(disabled).not.toHaveProperty('prompt')
     expect(disabled).not.toHaveProperty('inputImages')
     expect(disabled.galleryInputDraft).toBeNull()
-    expect(disabled.agentInputDrafts).toEqual({})
+    expect(disabled.appMode).toBe('gallery')
+    expect(disabled.agentInputDrafts['conversation-a']).toMatchObject({ prompt: '已归档的 Agent 草稿', inputImages: [{ id: imageA.id, dataUrl: '' }] })
     expect(JSON.stringify(withLegacyConversation.agentConversations)).not.toContain('legacy-conversation-base64')
   })
 
@@ -248,7 +251,7 @@ describe('persisted state codec', () => {
     ])
   })
 
-  it('does not restore Agent drafts or legacy top-level input when input persistence is disabled', () => {
+  it('keeps archived Agent drafts inert when input persistence is disabled', () => {
     const result = normalizePersistedState({
       settings: { ...DEFAULT_SETTINGS, persistInputOnRestart: false },
       appMode: 'agent',
@@ -263,7 +266,7 @@ describe('persisted state codec', () => {
 
     expect(result.state.activeAgentConversationId).toBe('indexed-conversation')
     expect(result.state.galleryInputDraft).toBeNull()
-    expect(result.state.agentInputDrafts).toEqual({})
+    expect(result.state.agentInputDrafts['indexed-conversation']).toMatchObject({ prompt: 'Agent 草稿', inputImages: [imageA] })
     expect(result.state.prompt).toBe('')
     expect(result.state.inputImages).toEqual([])
     expect(result.state.maskDraft).toBeNull()
@@ -368,10 +371,49 @@ describe('persisted state codec', () => {
     expect(gallery.state.favoriteCollections).toEqual([{ id: 'collection-b', name: '收藏夹 B', createdAt: 2, updatedAt: 3 }])
     expect(gallery.state.defaultFavoriteCollectionId).toBe('collection-b')
     expect(agent.state.activeAgentConversationId).toBe('indexed-conversation')
-    expect(agent.state.prompt).toBe('IndexedDB 对话草稿')
+    expect(agent.state.appMode).toBe('gallery')
+    expect(agent.state.prompt).toBe('')
     expect(Object.keys(agent.state.agentInputDrafts)).toEqual(['indexed-conversation', 'orphan'])
     expect(emptyFavorites.state.favoriteCollections[0].id).toBe(DEFAULT_FAVORITE_COLLECTION_ID)
     expect(emptyFavorites.state.defaultFavoriteCollectionId).toBe(DEFAULT_FAVORITE_COLLECTION_ID)
+  })
+
+  it('restores the separate gallery draft while preserving old Agent drafts and settings across saves', () => {
+    const saved = {
+      ...source(),
+      appMode: 'agent' as const,
+      settings: { ...DEFAULT_SETTINGS, agentMaxToolRounds: 8 },
+      prompt: '旧 Agent 当前输入',
+      galleryInputDraft: { prompt: '画廊草稿', inputImages: [], maskDraft: null, maskEditorImageId: null, updatedAt: 1 },
+      agentInputDrafts: {
+        archived: { prompt: '过期但需保留的草稿', inputImages: [imageA], maskDraft: null, maskEditorImageId: null, updatedAt: 1 },
+      },
+    }
+    const result = normalizePersistedState(saved, fallback(), 10 * 24 * 60 * 60 * 1000)!
+    expect(result.state).toMatchObject({ appMode: 'gallery', prompt: '画廊草稿', inputImages: [] })
+    expect(result.state.settings.agentMaxToolRounds).toBe(8)
+    expect(result.state.agentInputDrafts.archived).toMatchObject(saved.agentInputDrafts.archived)
+    expect(result.state.agentInputDrafts['conversation-a'].prompt).toBe('旧 Agent 当前输入')
+    expect(result.state.agentConversations).toEqual(saved.agentConversations)
+
+    const persisted = createPersistedState({ ...source(), ...result.state })
+    const reloaded = normalizePersistedState(persisted, fallback(), 20 * 24 * 60 * 60 * 1000)!
+    expect(persisted.appMode).toBe('gallery')
+    expect(persisted.agentInputDrafts.archived.inputImages).toEqual([{ id: imageA.id, dataUrl: '' }])
+    expect(reloaded.state.agentInputDrafts.archived.prompt).toBe('过期但需保留的草稿')
+    expect(reloaded.state.prompt).toBe('画廊草稿')
+  })
+
+  it('serializes stale Agent mode as gallery without replacing the gallery draft with Agent input', () => {
+    const persisted = createPersistedState({
+      ...source(),
+      appMode: 'agent',
+      prompt: 'Agent 输入',
+      galleryInputDraft: { prompt: '画廊输入', inputImages: [], maskDraft: null, maskEditorImageId: null },
+    })
+    expect(persisted.appMode).toBe('gallery')
+    expect(persisted.prompt).toBe('画廊输入')
+    expect(persisted.agentInputDrafts['conversation-a'].prompt).toBe('Agent 输入')
   })
 
   it('plans legacy and IndexedDB conversation merging by freshness and creation order', () => {

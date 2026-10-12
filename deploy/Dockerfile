@@ -37,11 +37,15 @@ ENV DEFAULT_UI_FONT=
 ENV DEFAULT_MONO_FONT=
 ENV BUILTIN_FONT_SOURCE=
 
+RUN apk add --no-cache nodejs
+COPY deploy/storage-server.mjs /opt/open-image-playground/storage-server.mjs
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chmod=755 deploy/migrate-api-env.envsh /docker-entrypoint.d/05-migrate-api-env.envsh
 COPY --chmod=755 deploy/inject-api-url.sh /docker-entrypoint.d/40-inject-api-url.sh
 
 EXPOSE 80
+
+COPY --chmod=755 deploy/start-storage.sh /docker-entrypoint.d/45-start-storage.sh
 
 CMD ["nginx", "-g", "daemon off;"]

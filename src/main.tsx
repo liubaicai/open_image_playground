@@ -9,6 +9,7 @@ import { installBrowserBehaviorGuards, installExternalLinkHandler, isTauri } fro
 import { installTauriLog } from './lib/tauriLog'
 import { installTauriStorageFlush, loadTauriStorage } from './lib/tauriStorage'
 import { installMobileViewportGuards } from './lib/viewport'
+import { isDockerSharedStorage, preloadDockerStorage } from './lib/dockerStorage'
 
 installMobileViewportGuards()
 
@@ -41,6 +42,7 @@ async function start() {
     await loadTauriStorage()
     void installTauriStorageFlush().catch((err) => console.error('注册关闭前保存失败：', err))
   }
+  if (isDockerSharedStorage) await preloadDockerStorage()
   const { default: App } = await import('./App')
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

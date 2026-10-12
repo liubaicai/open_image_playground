@@ -1,0 +1,36 @@
+name: Check Shared Storage
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'deploy/**'
+      - 'compose.yml'
+      - 'package*.json'
+      - '.github/workflows/check-shared-storage.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'deploy/**'
+      - 'compose.yml'
+      - 'package*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: node --check deploy/storage-server.mjs
+      - run: node --test deploy/storage-server.smoke.mjs deploy/docker-storage.smoke.mjs
+      - run: docker build -f deploy/Dockerfile -t open-image-playground:test .
