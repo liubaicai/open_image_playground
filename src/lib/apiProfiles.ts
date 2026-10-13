@@ -387,6 +387,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     timeout: DEFAULT_API_TIMEOUT,
     reasoningEffort: DEFAULT_API_URL_PATCH?.reasoningEffort,
     codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? false,
+    singleImageRequests: DEFAULT_API_URL_PATCH?.singleImageRequests,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
     streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
     transparentBackgroundMethod: DEFAULT_API_URL_PATCH?.transparentBackgroundMethod ?? 'api',
@@ -448,6 +449,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: profile.apiMode,
       reasoningEffort: profile.reasoningEffort,
       codexCli: profile.codexCli,
+      singleImageRequests: profile.singleImageRequests,
       apiProxy: profile.apiProxy,
       responseFormatB64Json: profile.responseFormatB64Json,
       streamImages: profile.streamImages,
@@ -470,6 +472,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       baseUrl: DEFAULT_OPENROUTER_BASE_URL,
       model: savedDraft?.model ?? '',
       enabledModels: savedDraft?.enabledModels ?? [],
+      singleImageRequests: undefined,
       providerDrafts,
     }
   }
@@ -486,6 +489,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: 'images',
       reasoningEffort: savedDraft?.reasoningEffort,
       codexCli: false,
+      singleImageRequests: undefined,
       apiProxy: false,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       streamImages: false,
@@ -509,6 +513,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       apiMode: 'images',
       reasoningEffort: savedDraft?.reasoningEffort,
       codexCli: savedDraft?.codexCli ?? false,
+      singleImageRequests: undefined,
       apiProxy: false,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
       streamImages: false,
@@ -537,6 +542,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     apiMode: nextApiMode,
     reasoningEffort: savedDraft?.reasoningEffort ?? profile.reasoningEffort,
     codexCli: savedDraft?.codexCli ?? profile.codexCli,
+    singleImageRequests: savedDraft?.singleImageRequests ?? (profile.provider === 'openai' ? profile.singleImageRequests : undefined),
     apiProxy: savedDraft?.apiProxy ?? DEFAULT_OPENAI_API_PROXY,
     responseFormatB64Json: savedDraft?.responseFormatB64Json,
     streamImages: nextStreamImages,
@@ -577,6 +583,7 @@ function normalizeProviderDraft(
     apiMode,
     reasoningEffort: normalizeReasoningEffort(input.reasoningEffort),
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
+    singleImageRequests: provider === 'openai' && input.singleImageRequests === true ? true : undefined,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
     responseFormatB64Json: input.responseFormatB64Json === true ? true : undefined,
     streamImages: typeof input.streamImages === 'boolean' ? input.streamImages : fallback.streamImages,
@@ -642,6 +649,7 @@ export function normalizeApiProfile(
     apiMode,
     reasoningEffort: normalizeReasoningEffort(record.reasoningEffort, defaults.reasoningEffort),
     codexCli: provider === 'openrouter' ? false : Boolean(record.codexCli),
+    singleImageRequests: provider === 'openai' && record.singleImageRequests === true ? true : undefined,
     apiProxy: provider === 'openrouter' || provider === 'sb2api-async' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
     responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
     streamImages,
@@ -1012,6 +1020,7 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
     profile.apiMode === 'images' &&
     profile.reasoningEffort === undefined &&
     profile.codexCli === false &&
+    !profile.singleImageRequests &&
     profile.apiProxy === DEFAULT_OPENAI_API_PROXY &&
     profile.streamImages === false &&
     profile.streamPartialImages === DEFAULT_STREAM_PARTIAL_IMAGES &&
@@ -1205,6 +1214,7 @@ const PRESET_PROFILE_DEPLOYMENT_KEYS = [
   'apiMode',
   'reasoningEffort',
   'codexCli',
+  'singleImageRequests',
   'apiProxy',
   'responseFormatB64Json',
   'streamImages',

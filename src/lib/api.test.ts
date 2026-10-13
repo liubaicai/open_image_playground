@@ -179,6 +179,131 @@ describe('callImageApi', () => {
     expect(result.actualParams).toMatchObject({ quality: 'xhigh' })
   })
 
+  it.each([false, true])('preserves explicit Images API settings and reports missing images without retrying when editing is %s', async (isEdit) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).startsWith('data:')) return new Response('image', { headers: { 'Content-Type': 'image/png' } })
+      return new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2U=' }],
+        size: '1448x1086',
+        quality: 'medium',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: false, streamImages: false },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, size: '2160x1440', quality: 'high', n: 3 },
+      inputImageDataUrls: isEdit ? ['data:image/png;base64,aW1hZ2U='] : [],
+    })
+
+    const calls = fetchMock.mock.calls.filter(([url]) => !String(url).startsWith('data:'))
+    expect(calls).toHaveLength(1)
+    const body = (calls[0][1] as RequestInit).body
+    const sent = body instanceof FormData
+      ? Object.fromEntries(['size', 'quality', 'n'].map((key) => [key, body.get(key)]))
+      : JSON.parse(String(body))
+    expect(sent).toMatchObject({ size: '2160x1440', quality: 'high', n: isEdit ? '3' : 3 })
+    expect(result.images).toEqual(['data:image/png;base64,aW1hZ2U='])
+    expect(result.actualParams).toMatchObject({ size: '1448x1086', quality: 'medium' })
+    expect(result.failedRequests?.map((item) => item.requestIndex)).toEqual([1, 2])
+    expect(result.failedRequests?.[0].error).toContain('请求 3 张但仅返回 1 张')
+    expect(result.failedRequests?.[0].error).toContain('未自动补发请求')
+  })
+
+  it.each([3, 4])('keeps all %s Images API outputs without reporting missing images when requesting 3', async (count) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: Array.from({ length: count }, () => ({ b64_json: 'aW1hZ2U=' })),
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', codexCli: false, streamImages: false },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, n: 3 },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toHaveLength(count)
+    expect(result.failedRequests).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false, true])('generates three independent images while preserving size and quality when editing is %s', async (isEdit) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      if (String(url).startsWith('data:')) return new Response('image', { headers: { 'Content-Type': 'image/png' } })
+      const sent = init?.body instanceof FormData ? Object.fromEntries(init.body.entries()) : JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({
+        data: [{ b64_json: 'aW1hZ2U=', revised_prompt: sent.prompt }], size: '2160x1440', quality: 'high',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', singleImageRequests: true, codexCli: false, streamImages: false })
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', profiles: [profile] },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, size: '2160x1440', quality: 'high', n: 3 },
+      inputImageDataUrls: isEdit ? ['data:image/png;base64,aW1hZ2U='] : [],
+    })
+
+    const calls = fetchMock.mock.calls.filter(([url]) => !String(url).startsWith('data:'))
+    expect(calls).toHaveLength(3)
+    for (const [, init] of calls) {
+      const body = (init as RequestInit).body
+      const sent = body instanceof FormData ? Object.fromEntries(body.entries()) : JSON.parse(String(body))
+      expect(sent).toMatchObject({ size: '2160x1440', quality: 'high' })
+      expect(sent.prompt).toMatch(/^日常学习场景\n\n/)
+      expect(sent.prompt).toContain('2160x1440 pixels (width 2160, height 1440; aspect ratio 3:2)')
+      expect(sent.prompt).toContain('Rendering quality: high')
+      expect(sent.n).toBeUndefined()
+      expect(sent.stream).toBeUndefined()
+    }
+    expect(result.images).toHaveLength(3)
+    expect(result.actualParams).toMatchObject({ size: '2160x1440', quality: 'high', n: 3 })
+    expect(result.failedRequests).toBeUndefined()
+    expect(result.revisedPrompts).toEqual(Array(3).fill('日常学习场景'))
+  })
+
+  it.each([
+    { size: 'auto', quality: 'auto' as const },
+    { size: 'auto', quality: 'high' as const },
+    { size: '2160x1440', quality: 'auto' as const },
+  ])('emphasizes only explicit settings for a single independent request: %j', async (params) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), { headers: { 'Content-Type': 'application/json' } }))
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', singleImageRequests: true, codexCli: false, streamImages: false })
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', profiles: [profile] },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, ...params },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body).toMatchObject({ size: params.size, quality: params.quality })
+    expect(body.prompt.includes('Output size:')).toBe(params.size !== 'auto')
+    expect(body.prompt.includes('Rendering quality:')).toBe(params.quality !== 'auto')
+    if (params.size === 'auto' && params.quality === 'auto') expect(body.prompt).toBe('日常学习场景')
+  })
+
+  it('retains successful independent image requests when one fails without retrying', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      if (fetchMock.mock.calls.length === 2) return new Response(JSON.stringify({ error: { message: '额度不足' } }), { status: 429 })
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), { headers: { 'Content-Type': 'application/json' } })
+    })
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', singleImageRequests: true, codexCli: false, streamImages: false })
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', profiles: [profile] },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, n: 3 },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(result.images).toHaveLength(2)
+    expect(result.actualParams?.n).toBe(2)
+    expect(result.failedRequests).toEqual([{ requestIndex: 1, error: '额度不足' }])
+  })
+
   it.each([false, true])('explains the image tool dropped error without retrying when streaming is %s', async (streamImages) => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       error: { message: "Tool choice 'required' must be specified with 'tools' parameter." },

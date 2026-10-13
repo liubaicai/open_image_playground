@@ -51,6 +51,17 @@ describe('validateApiProfile', () => {
 })
 
 describe('normalizeApiProfile', () => {
+  it('preserves independent image requests through JSON restore and provider switching', () => {
+    const profile = createDefaultOpenAIProfile({ singleImageRequests: true })
+    const restored = normalizeApiProfile(JSON.parse(JSON.stringify(profile)))
+    expect(restored.singleImageRequests).toBe(true)
+    const openrouter = switchApiProfileProvider(restored, 'openrouter')
+    expect(openrouter.singleImageRequests).toBeUndefined()
+    expect(switchApiProfileProvider(normalizeApiProfile(openrouter), 'openai').singleImageRequests).toBe(true)
+    expect(normalizeApiProfile({ singleImageRequests: 'true' }).singleImageRequests).toBeUndefined()
+    expect(normalizeApiProfile({}).singleImageRequests).toBeUndefined()
+  })
+
   it('uses the mode default and preserves the external model field', () => {
     expect(normalizeApiProfile({ apiMode: 'responses' }).model).toBe(DEFAULT_RESPONSES_MODEL)
     expect(normalizeSettings({ apiMode: 'responses' }).model).toBe(DEFAULT_RESPONSES_MODEL)

@@ -93,12 +93,14 @@ export interface ApiProfile {
   apiMode: ApiMode
   reasoningEffort?: ReasoningEffort
   codexCli: boolean
+  /** Images API 多图生成时拆成独立的单图请求，保留尺寸和质量参数。 */
+  singleImageRequests?: boolean
   apiProxy: boolean
   responseFormatB64Json?: boolean
   streamImages?: boolean
   streamPartialImages?: number
   transparentBackgroundMethod: 'api' | 'local'
-  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'selectedModel' | 'enabledModels' | 'imageGenerationModel' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
+  providerDrafts?: Partial<Record<ApiProvider, Partial<Pick<ApiProfile, 'baseUrl' | 'model' | 'selectedModel' | 'enabledModels' | 'imageGenerationModel' | 'apiMode' | 'reasoningEffort' | 'codexCli' | 'singleImageRequests' | 'apiProxy' | 'responseFormatB64Json' | 'streamImages' | 'streamPartialImages' | 'transparentBackgroundMethod'>>>>
 }
 
 export interface PresetAgentConfig {

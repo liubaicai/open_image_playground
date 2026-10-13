@@ -27,7 +27,7 @@ import {
 import { getImageGenerationModel } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
-import { prependCodexCliSizePrompt } from './size'
+import { formatImageRatio, parseRatio, prependCodexCliSizePrompt } from './size'
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -454,7 +454,7 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
 
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const n = opts.params.n > 0 ? opts.params.n : 1
-  if ((profile.codexCli || (profile.streamImages && n > 1)) && n > 1) {
+  if ((profile.codexCli || profile.streamImages || profile.singleImageRequests) && n > 1) {
     return callImagesApiConcurrent(opts, profile, n)
   }
 
@@ -484,9 +484,19 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
 
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
+  const dims = parseRatio(params.size)
+  const constraints = [
+    params.size === 'auto' ? '' : `Output size: ${params.size}${dims ? ` pixels (width ${dims.width}, height ${dims.height}; aspect ratio ${formatImageRatio(dims.width, dims.height)})` : ''}.`,
+    params.quality === 'auto' ? '' : `Rendering quality: ${params.quality}.`,
+  ].filter(Boolean).join('\n')
+  // 兼容接口可能忽略参数，用文字补充强调，但仍保留 API 参数。
+  const settingsSuffix = profile.singleImageRequests && !profile.codexCli && !opts.skipCodexCliSizePrompt && constraints
+    ? `\n\n[Output settings]\n${constraints}\nPrioritize these output settings over conflicting size or quality descriptions in the prompt. Do not render these instructions as visible text.`
+    : ''
+  const appendSettings = settingsSuffix && !originalPrompt.trimEnd().endsWith(settingsSuffix)
   const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
     ? prependCodexCliSizePrompt(originalPrompt, params.size)
-    : originalPrompt
+    : appendSettings ? `${originalPrompt}${settingsSuffix}` : originalPrompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${sizePrompt}`
     : sizePrompt
@@ -620,11 +630,23 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       throw new Error(maybeAppendStreamingHint(errorMessage, response.status, profile.streamImages))
     }
 
-    if (profile.streamImages && isEventStreamResponse(response)) {
-      return await parseImagesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
+    const result = profile.streamImages && isEventStreamResponse(response)
+      ? await parseImagesApiStreamResponse(response, mime, opts.onPartialImage, controller.signal)
+      : await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    // 接口原样回显追加内容时，不将应用补充的设置误标为接口改写。
+    if (appendSettings) {
+      result.revisedPrompts = result.revisedPrompts?.map((text) =>
+        text?.trimEnd().endsWith(settingsSuffix) ? text.trimEnd().slice(0, -settingsSuffix.length) : text,
+      )
     }
-
-    return await parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    // 兼容接口可能忽略 n；保留已返回图片并标记缺少的张数，不自动补发付费请求。
+    if (result.images.length < params.n) {
+      result.failedRequests = Array.from({ length: params.n - result.images.length }, (_, offset) => ({
+        requestIndex: result.images.length + offset,
+        error: `接口本次请求 ${params.n} 张但仅返回 ${result.images.length} 张；请检查服务商是否支持数量参数，未自动补发请求`,
+      }))
+    }
+    return result
   } finally {
     clearTimeout(timeoutId)
   }

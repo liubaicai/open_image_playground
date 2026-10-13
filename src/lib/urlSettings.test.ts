@@ -32,6 +32,15 @@ async function importPresetConfigOnlyUrlSettings(options: { locked?: boolean, mu
 }
 
 describe('URL settings params', () => {
+  it('imports independent image requests into a saved profile and allows disabling them', () => {
+    const current = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ id: 'saved' })] })
+    const enabled = normalizeSettings(buildSettingsFromUrlParams(current, new URLSearchParams('profileId=saved&singleImageRequests=true')))
+    expect(enabled.profiles).toHaveLength(1)
+    expect(enabled.profiles[0].singleImageRequests).toBe(true)
+    const disabled = normalizeSettings(buildSettingsFromUrlParams(enabled, new URLSearchParams('profileId=saved&singleImageRequests=false')))
+    expect(disabled.profiles[0].singleImageRequests).toBeUndefined()
+  })
+
   it('preserves an existing model when apiMode changes', () => {
     const current = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ id: 'saved', model: 'vendor/model', imageGenerationModel: '' })] })
     const switched = normalizeSettings(buildSettingsFromUrlParams(current, new URLSearchParams('profileId=saved&apiMode=responses')))

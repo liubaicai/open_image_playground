@@ -5,7 +5,7 @@ import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { formatImageRatio } from '../lib/size'
-import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
+import { ActualValueBadge, DetailParamValue, getParamDisplay } from '../lib/paramDisplay'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
@@ -247,6 +247,9 @@ export default function DetailModal() {
   const currentActualParams = (baseActualParams?.size || !currentImageSize)
     ? baseActualParams
     : { ...(baseActualParams ?? {}), size: currentImageSize.replace('×', 'x') }
+  const hasParameterMismatch = (['size', 'quality', 'n'] as const).some((key) =>
+    getParamDisplay(task, key, key === 'n' ? task.actualParams : currentActualParams).isMismatch,
+  )
   const currentRevisedPrompt = currentOutputImageId ? task.revisedPromptByImage?.[currentOutputImageId]?.trim() : ''
   // 将 @图N 等 mention 标记和透明背景追加提示词都按实际请求内容比较，
   // 避免仅由本地请求预处理导致的不一致被当作“API 改写”。
@@ -1038,6 +1041,11 @@ export default function DetailModal() {
               )}
             </div>
 
+            {task.status === 'done' && hasParameterMismatch && (
+              <p role="status" className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                实际结果与设置不一致，黄色数值为实际结果。请检查当前服务商是否支持并正确处理所选参数；已返回的图片已保留。
+              </p>
+            )}
             {/* 时间 */}
             <div className="text-xs text-gray-400 dark:text-gray-500 mb-4">
               <span>创建于 {formatTime(task.createdAt)}</span>

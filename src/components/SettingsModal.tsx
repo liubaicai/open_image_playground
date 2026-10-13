@@ -132,6 +132,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.apiMode === 'images' &&
     profile.reasoningEffort === undefined &&
     profile.codexCli === false &&
+    !profile.singleImageRequests &&
     profile.apiProxy === defaultProfile.apiProxy &&
     profile.streamImages === defaultProfile.streamImages &&
     profile.streamPartialImages === defaultProfile.streamPartialImages &&
@@ -433,6 +434,7 @@ export default function SettingsModal() {
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
         apiProxy: isTauri ? profile.apiProxy : nextApiProxy,
         codexCli: isOpenAICompatibleProvider(nextDraft, profile.provider) ? profile.codexCli : false,
+        singleImageRequests: profile.provider === 'openai' && profile.singleImageRequests === true ? true : undefined,
         streamImages: profile.provider === 'openai' ? profile.streamImages : false,
         streamPartialImages: profile.provider === 'openai' ? normalizeStreamPartialImages(profile.streamPartialImages) : DEFAULT_STREAM_PARTIAL_IMAGES,
       }
@@ -485,6 +487,7 @@ export default function SettingsModal() {
       if (profile.name.trim()) url.searchParams.set('profileName', profile.name.trim())
       if (profile.reasoningEffort) url.searchParams.set('reasoningEffort', profile.reasoningEffort)
       if (profile.codexCli) url.searchParams.set('codexCli', 'true')
+      if (profile.singleImageRequests) url.searchParams.set('singleImageRequests', 'true')
       if (profile.streamImages !== DEFAULT_SETTINGS.streamImages) url.searchParams.set('streamImages', String(Boolean(profile.streamImages)))
       if (profile.streamPartialImages !== DEFAULT_STREAM_PARTIAL_IMAGES) url.searchParams.set('streamPartialImages', String(normalizeStreamPartialImages(profile.streamPartialImages)))
       if (profile.transparentBackgroundMethod !== 'api') url.searchParams.set('transparentBackgroundMethod', profile.transparentBackgroundMethod)
@@ -1685,6 +1688,28 @@ export default function SettingsModal() {
                     <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                       对应 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">partial_images</code> 参数（0-3）。建议设为 2 或 3 以避免长时间生成时连接超时断开。实际返回的每张中间图像会产生少量额外计费。设为 0 时不请求中间步骤图像，连接可能因无数据传输而被断开。
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {activeProfile.provider === 'openai' && activeProfile.apiMode === 'images' && (
+                <div className="block">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">多图逐张请求</span>
+                    <button
+                      type="button"
+                      onClick={() => updateActiveProfile({ singleImageRequests: !activeProfile.singleImageRequests }, true)}
+                      disabled={activeProfileLocked}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${activeProfile.singleImageRequests ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={!!activeProfile.singleImageRequests}
+                      aria-label="多图逐张请求"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${activeProfile.singleImageRequests ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    适用于 CPA 等每次只返回一张图片的兼容接口。开启后按所选张数并发发送独立请求，并在提示词中强调明确选择的尺寸、宽高比和质量，同时保留 API 参数；按实际请求计费。尺寸和质量能否生效仍取决于上游支持。
                   </div>
                 </div>
               )}
