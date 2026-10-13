@@ -285,6 +285,35 @@ describe('callImageApi', () => {
     if (params.size === 'auto' && params.quality === 'auto') expect(body.prompt).toBe('日常学习场景')
   })
 
+  it.each([false, true])('emphasizes a single request independently of splitting and captures the wire prompt when editing is %s', async (isEdit) => {
+    const onRequestPrompt = vi.fn()
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).startsWith('data:')) return new Response('image', { headers: { 'Content-Type': 'image/png' } })
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), { headers: { 'Content-Type': 'application/json' } })
+    })
+    const profile = createDefaultOpenAIProfile({ apiKey: 'test-key', singleImageRequests: false })
+    const opts = {
+      settings: { ...DEFAULT_SETTINGS, profiles: [profile] },
+      prompt: '日常学习场景',
+      params: { ...DEFAULT_PARAMS, size: '1920x1088', quality: 'high' as const, n: 1 },
+      inputImageDataUrls: isEdit ? ['data:image/png;base64,aW1hZ2U='] : [],
+      onRequestPrompt,
+    }
+    await callImageApi(opts)
+    const calls = fetchMock.mock.calls.filter(([url]) => !String(url).startsWith('data:'))
+    expect(calls).toHaveLength(1)
+    const body = calls[0][1]?.body
+    const sent = body instanceof FormData ? Object.fromEntries(body.entries()) : JSON.parse(String(body))
+    expect(sent.prompt).toContain('Output size: 1920x1088')
+    expect(sent.prompt).toContain('Rendering quality: high')
+    expect(onRequestPrompt).toHaveBeenCalledWith(sent.prompt)
+
+    profile.emphasizeOutputSettings = false
+    onRequestPrompt.mockClear()
+    await callImageApi(opts)
+    expect(onRequestPrompt).toHaveBeenCalledWith(opts.prompt)
+  })
+
   it('retains successful independent image requests when one fails without retrying', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       if (fetchMock.mock.calls.length === 2) return new Response(JSON.stringify({ error: { message: '额度不足' } }), { status: 429 })

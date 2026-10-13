@@ -490,7 +490,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
     params.quality === 'auto' ? '' : `Rendering quality: ${params.quality}.`,
   ].filter(Boolean).join('\n')
   // 兼容接口可能忽略参数，用文字补充强调，但仍保留 API 参数。
-  const settingsSuffix = profile.singleImageRequests && !profile.codexCli && !opts.skipCodexCliSizePrompt && constraints
+  const settingsSuffix = profile.emphasizeOutputSettings !== false && !profile.codexCli && !opts.skipCodexCliSizePrompt && constraints
     ? `\n\n[Output settings]\n${constraints}\nPrioritize these output settings over conflicting size or quality descriptions in the prompt. Do not render these instructions as visible text.`
     : ''
   const appendSettings = settingsSuffix && !originalPrompt.trimEnd().endsWith(settingsSuffix)
@@ -572,6 +572,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         formData.append('mask', maskBlob, 'mask.png')
       }
 
+      opts.onRequestPrompt?.(prompt)
       response = await apiFetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
         method: 'POST',
         headers: requestHeaders,
@@ -613,6 +614,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
         body.partial_images = getStreamPartialImages(profile)
       }
 
+      opts.onRequestPrompt?.(prompt)
       response = await apiFetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
         method: 'POST',
         headers: {
@@ -849,6 +851,8 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
     }
   }
 
+  const sentPrompt = body instanceof FormData ? body.get('prompt') : typeof body === 'string' ? JSON.parse(body)?.prompt : undefined
+  if (typeof sentPrompt === 'string') opts.onRequestPrompt?.(sentPrompt)
   const response = await apiFetch(buildApiUrl(profile.baseUrl, path, proxyConfig, useApiProxy), {
     method,
     headers,
@@ -1068,6 +1072,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       body.stream = true
     }
 
+    opts.onRequestPrompt?.(opts.settings.allowPromptRewrite ? requestPrompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${requestPrompt}`)
     const response = await apiFetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
       method: 'POST',
       headers: {

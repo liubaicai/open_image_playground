@@ -365,7 +365,7 @@ describe('task retry', () => {
   })
 
   it('overwrites a successful task when retry mode allows any task', async () => {
-    const original = task({ outputImages: ['old-output'], isFavorite: true })
+    const original = task({ outputImages: ['old-output'], isFavorite: true, sentPrompt: '旧请求提示词' })
     await putImage({ id: 'old-output', dataUrl: 'data:image/png;base64,old', source: 'generated', createdAt: 1 })
     useStore.setState({ settings: { ...useStore.getState().settings, alwaysShowRetryButton: true, retryMode: 'overwriteAll' }, tasks: [original] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
@@ -374,6 +374,7 @@ describe('task retry', () => {
     await retryTask(original)
     expect(useStore.getState().tasks).toHaveLength(1)
     expect(useStore.getState().tasks[0]).toMatchObject({ id: original.id, status: 'running', createdAt: original.createdAt, outputImages: [], isFavorite: true, elapsed: null })
+    expect(useStore.getState().tasks[0].sentPrompt).toBeUndefined()
     await vi.waitFor(async () => expect(await getImage('old-output')).toBeUndefined())
     request.resolve({ images: ['data:image/png;base64,new'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
@@ -601,6 +602,17 @@ describe('mask draft lifecycle in store actions', () => {
     await submitTask()
 
     expect(useStore.getState().maskDraft).toBeNull()
+  })
+
+  it('persists the exact sent prompt even when the API rejects the request', async () => {
+    const sentPrompt = '实际提示词\n\n[Output settings]\nRendering quality: high.'
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onRequestPrompt?.(sentPrompt)
+      throw new Error('拒绝请求')
+    })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    expect(useStore.getState().tasks[0].sentPrompt).toBe(sentPrompt)
   })
 
   it('shows a submitted toast after creating a gallery task', async () => {

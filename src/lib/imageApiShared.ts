@@ -21,6 +21,7 @@ export interface CallApiOptions {
   inputImageDataUrls: string[]
   maskDataUrl?: string
   skipCodexCliSizePrompt?: boolean
+  onRequestPrompt?: (prompt: string) => void
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void

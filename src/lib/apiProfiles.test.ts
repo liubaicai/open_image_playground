@@ -51,6 +51,16 @@ describe('validateApiProfile', () => {
 })
 
 describe('normalizeApiProfile', () => {
+  it('defaults output emphasis on for old profiles and preserves explicit opt-out through restore and provider switching', () => {
+    expect(normalizeApiProfile({}).emphasizeOutputSettings).toBe(true)
+    expect(createDefaultOpenAIProfile().emphasizeOutputSettings).toBe(true)
+    const profile = normalizeApiProfile(JSON.parse(JSON.stringify(createDefaultOpenAIProfile({ emphasizeOutputSettings: false }))))
+    expect(profile.emphasizeOutputSettings).toBe(false)
+    const other = switchApiProfileProvider(profile, 'openrouter')
+    expect(other.emphasizeOutputSettings).toBeUndefined()
+    expect(switchApiProfileProvider(normalizeApiProfile(other), 'openai').emphasizeOutputSettings).toBe(false)
+  })
+
   it('preserves independent image requests through JSON restore and provider switching', () => {
     const profile = createDefaultOpenAIProfile({ singleImageRequests: true })
     const restored = normalizeApiProfile(JSON.parse(JSON.stringify(profile)))

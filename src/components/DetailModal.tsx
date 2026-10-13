@@ -905,6 +905,32 @@ export default function DetailModal() {
               </div>
             )}
 
+            {task.sentPrompt && (
+              <details className="mb-4" open>
+                <summary className="text-xs font-medium text-gray-400 dark:text-gray-500 cursor-pointer">实际发送的提示词</summary>
+                <div className="mt-2 flex items-start gap-2">
+                  <p className="flex-1 text-sm text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">{task.sentPrompt}</p>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await copyTextToClipboard(task.sentPrompt!)
+                        showToast('已复制实际发送的提示词', 'success')
+                      } catch (err) {
+                        showToast(getClipboardFailureMessage('复制提示词失败', err), 'error')
+                      }
+                    }}
+                    className="p-1 rounded text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition"
+                    title="复制实际发送的提示词"
+                  >
+                    <CopyIcon className="h-4 w-4" />
+                  </button>
+                </div>
+              </details>
+            )}
+            {!task.sentPrompt && task.status !== 'running' && task.sourceMode !== 'agent' && (
+              <p className="mb-4 text-xs text-gray-400 dark:text-gray-500">此任务未记录实际发送的提示词。</p>
+            )}
+
             {/* 参考图 */}
             {showReferenceSection && (
               <div className="mb-4">

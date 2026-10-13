@@ -133,6 +133,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.reasoningEffort === undefined &&
     profile.codexCli === false &&
     !profile.singleImageRequests &&
+    profile.emphasizeOutputSettings !== false &&
     profile.apiProxy === defaultProfile.apiProxy &&
     profile.streamImages === defaultProfile.streamImages &&
     profile.streamPartialImages === defaultProfile.streamPartialImages &&
@@ -435,6 +436,7 @@ export default function SettingsModal() {
         apiProxy: isTauri ? profile.apiProxy : nextApiProxy,
         codexCli: isOpenAICompatibleProvider(nextDraft, profile.provider) ? profile.codexCli : false,
         singleImageRequests: profile.provider === 'openai' && profile.singleImageRequests === true ? true : undefined,
+        emphasizeOutputSettings: profile.provider === 'openai' ? profile.emphasizeOutputSettings !== false : undefined,
         streamImages: profile.provider === 'openai' ? profile.streamImages : false,
         streamPartialImages: profile.provider === 'openai' ? normalizeStreamPartialImages(profile.streamPartialImages) : DEFAULT_STREAM_PARTIAL_IMAGES,
       }
@@ -488,6 +490,7 @@ export default function SettingsModal() {
       if (profile.reasoningEffort) url.searchParams.set('reasoningEffort', profile.reasoningEffort)
       if (profile.codexCli) url.searchParams.set('codexCli', 'true')
       if (profile.singleImageRequests) url.searchParams.set('singleImageRequests', 'true')
+      if (profile.emphasizeOutputSettings === false) url.searchParams.set('emphasizeOutputSettings', 'false')
       if (profile.streamImages !== DEFAULT_SETTINGS.streamImages) url.searchParams.set('streamImages', String(Boolean(profile.streamImages)))
       if (profile.streamPartialImages !== DEFAULT_STREAM_PARTIAL_IMAGES) url.searchParams.set('streamPartialImages', String(normalizeStreamPartialImages(profile.streamPartialImages)))
       if (profile.transparentBackgroundMethod !== 'api') url.searchParams.set('transparentBackgroundMethod', profile.transparentBackgroundMethod)
@@ -1709,7 +1712,29 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    适用于 CPA 等每次只返回一张图片的兼容接口。开启后按所选张数并发发送独立请求，并在提示词中强调明确选择的尺寸、宽高比和质量，同时保留 API 参数；按实际请求计费。尺寸和质量能否生效仍取决于上游支持。
+                    适用于 CPA 等每次只返回一张图片的兼容接口。开启后按所选张数并发发送独立请求，同时保留 API 参数；按实际请求计费。
+                  </div>
+                </div>
+              )}
+
+              {activeProfile.provider === 'openai' && activeProfile.apiMode === 'images' && !activeProfile.codexCli && (
+                <div className="block">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">强调输出尺寸和质量</span>
+                    <button
+                      type="button"
+                      onClick={() => updateActiveProfile({ emphasizeOutputSettings: activeProfile.emphasizeOutputSettings === false }, true)}
+                      disabled={activeProfileLocked}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${activeProfile.emphasizeOutputSettings !== false ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={activeProfile.emphasizeOutputSettings !== false}
+                      aria-label="强调输出尺寸和质量"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${activeProfile.emphasizeOutputSettings !== false ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    默认开启，单张和多张请求都会追加明确选择的尺寸、宽高比和质量，自动值不会追加；保留 API 参数。任务详情可查看实际发送的提示词，最终输出仍取决于上游支持。
                   </div>
                 </div>
               )}

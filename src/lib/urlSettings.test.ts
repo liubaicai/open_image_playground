@@ -32,6 +32,15 @@ async function importPresetConfigOnlyUrlSettings(options: { locked?: boolean, mu
 }
 
 describe('URL settings params', () => {
+  it('imports explicit output-emphasis opt-out without enabling single-image requests', () => {
+    const current = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ id: 'saved' })], activeProfileId: 'saved' })
+    const disabled = normalizeSettings(buildSettingsFromUrlParams(current, new URLSearchParams('profileId=saved&emphasizeOutputSettings=false')))
+    expect(disabled.profiles[0].emphasizeOutputSettings).toBe(false)
+    expect(disabled.profiles[0].singleImageRequests).toBeUndefined()
+    const enabled = normalizeSettings(buildSettingsFromUrlParams(disabled, new URLSearchParams('profileId=saved&emphasizeOutputSettings=true')))
+    expect(enabled.profiles[0].emphasizeOutputSettings).toBe(true)
+  })
+
   it('imports independent image requests into a saved profile and allows disabling them', () => {
     const current = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ id: 'saved' })] })
     const enabled = normalizeSettings(buildSettingsFromUrlParams(current, new URLSearchParams('profileId=saved&singleImageRequests=true')))

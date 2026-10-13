@@ -138,11 +138,12 @@ export function describeImportLink(params: URLSearchParams, settings: AppSetting
     ['返回 Base64 图片数据', (p) => onOff(p.responseFormatB64Json)],
     ['Codex CLI 兼容模式', (p) => onOff(p.codexCli)],
     ['多图逐张请求', (p) => onOff(p.singleImageRequests)],
+    ['强调输出尺寸和质量', (p) => onOff(p.emphasizeOutputSettings !== false)],
     ['请求超时 (秒)', (p) => literal(clip(String(p.timeout)))],
     ['配置说明', (p) => literal(clip(p.description ?? ''))],
   ]
   // 上面已逐项展示的字段；其余字段（如其他服务商的草稿，可能含地址）有变化时统一提示
-  const shownKeys = new Set(['name', 'baseUrl', 'model', 'apiKey', 'provider', 'apiProxy', 'apiMode', 'selectedModel', 'imageGenerationModel', 'reasoningEffort', 'streamImages', 'streamPartialImages', 'transparentBackgroundMethod', 'responseFormatB64Json', 'codexCli', 'singleImageRequests', 'timeout', 'description'])
+  const shownKeys = new Set(['name', 'baseUrl', 'model', 'apiKey', 'provider', 'apiProxy', 'apiMode', 'selectedModel', 'imageGenerationModel', 'reasoningEffort', 'streamImages', 'streamPartialImages', 'transparentBackgroundMethod', 'responseFormatB64Json', 'codexCli', 'singleImageRequests', 'emphasizeOutputSettings', 'timeout', 'description'])
   const hidden = (profile: ApiProfile) => JSON.stringify(Object.entries(profile).filter(([key]) => !shownKeys.has(key)))
   // 新增配置只有 + 行，值为空的字段没有意义，不列出
   const fieldRows = (before: ApiProfile, after: ApiProfile, showBefore: boolean): ImportLinkDiffRow[] => fields

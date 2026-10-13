@@ -221,6 +221,7 @@ export async function callFalAiImageApi(opts: CallApiOptions, profile: ApiProfil
     const isEdit = opts.inputImageDataUrls.length > 0
     const endpoint = mapFalEndpoint(profile.model, isEdit)
     const input = await createFalRequestInput(opts, profile.model)
+    opts.onRequestPrompt?.(String(input.prompt))
     const result = await fal.subscribe(endpoint, {
       input,
       logs: true,

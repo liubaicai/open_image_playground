@@ -13,7 +13,7 @@ import {
 } from './apiProfiles'
 import { isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile } from './presetConfig'
 
-const URL_SETTING_KEYS = ['settings', 'profileId', 'apiUrl', 'apiKey', 'codexCli', 'singleImageRequests', 'apiMode', 'model', 'imageGenerationModel', 'profileName', 'reasoningEffort', 'streamImages', 'streamPartialImages', 'transparentBackgroundMethod']
+const URL_SETTING_KEYS = ['settings', 'profileId', 'apiUrl', 'apiKey', 'codexCli', 'singleImageRequests', 'emphasizeOutputSettings', 'apiMode', 'model', 'imageGenerationModel', 'profileName', 'reasoningEffort', 'streamImages', 'streamPartialImages', 'transparentBackgroundMethod']
 
 function getProfileDedupKey(profile: ApiProfile) {
   return JSON.stringify([
@@ -27,6 +27,7 @@ function getProfileDedupKey(profile: ApiProfile) {
     profile.reasoningEffort,
     profile.codexCli === true,
     profile.singleImageRequests === true,
+    profile.emphasizeOutputSettings !== false,
     profile.streamImages === true,
     profile.streamPartialImages ?? 0,
     profile.transparentBackgroundMethod,
@@ -184,6 +185,7 @@ function buildPresetConfigOnlySettingsFromUrlParams(currentSettings: Partial<App
           if (targetProfile.provider !== 'fal' && typeof matched.codexCli === 'boolean') patch.codexCli = matched.codexCli
           if (isOpenAI) {
             if (typeof matched.singleImageRequests === 'boolean') patch.singleImageRequests = matched.singleImageRequests
+            if (typeof matched.emphasizeOutputSettings === 'boolean') patch.emphasizeOutputSettings = matched.emphasizeOutputSettings
             if (matched.apiMode === 'images' || matched.apiMode === 'responses') patch.apiMode = matched.apiMode
             if (matched.reasoningEffort !== undefined) patch.reasoningEffort = normalizeReasoningEffort(matched.reasoningEffort)
             if (typeof matched.streamImages === 'boolean') patch.streamImages = matched.streamImages
@@ -220,11 +222,13 @@ function buildPresetConfigOnlySettingsFromUrlParams(currentSettings: Partial<App
     const reasoningEffortParam = searchParams.get('reasoningEffort')
     const streamImagesParam = searchParams.get('streamImages')
     const singleImageRequestsParam = searchParams.get('singleImageRequests')
+    const emphasizeOutputSettingsParam = searchParams.get('emphasizeOutputSettings')
     const streamPartialImagesParam = searchParams.get('streamPartialImages')
     if (apiModeParam === 'images' || apiModeParam === 'responses') patch.apiMode = apiModeParam
     if (reasoningEffortParam !== null) patch.reasoningEffort = normalizeReasoningEffort(reasoningEffortParam)
     if (streamImagesParam !== null) patch.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (singleImageRequestsParam !== null) patch.singleImageRequests = singleImageRequestsParam.trim().toLowerCase() === 'true'
+    if (emphasizeOutputSettingsParam !== null) patch.emphasizeOutputSettings = emphasizeOutputSettingsParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
   }
 
@@ -261,6 +265,7 @@ function buildRegularSettingsFromUrlParams(currentSettings: Partial<AppSettings>
   const profileName = profileNameParam?.trim() ?? ''
   const streamImagesParam = searchParams.get('streamImages')
   const singleImageRequestsParam = searchParams.get('singleImageRequests')
+  const emphasizeOutputSettingsParam = searchParams.get('emphasizeOutputSettings')
   const streamPartialImagesParam = searchParams.get('streamPartialImages')
   const transparentBackgroundMethodParam = searchParams.get('transparentBackgroundMethod')
   const transparentBackgroundMethod: ApiProfile['transparentBackgroundMethod'] | undefined = transparentBackgroundMethodParam === 'api' || transparentBackgroundMethodParam === 'local'
@@ -268,7 +273,7 @@ function buildRegularSettingsFromUrlParams(currentSettings: Partial<AppSettings>
     : undefined
   const apiMode: ApiMode | undefined = apiModeParam === 'images' || apiModeParam === 'responses' ? apiModeParam : undefined
 
-  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || singleImageRequestsParam !== null || apiMode !== undefined || modelParam !== null || imageGenerationModelParam !== null || profileNameParam !== null || reasoningEffortParam !== null || streamImagesParam !== null || streamPartialImagesParam !== null
+  const hasLegacyOpenAIParams = apiUrlParam !== null || apiKeyParam !== null || codexCliParam !== null || singleImageRequestsParam !== null || emphasizeOutputSettingsParam !== null || apiMode !== undefined || modelParam !== null || imageGenerationModelParam !== null || profileNameParam !== null || reasoningEffortParam !== null || streamImagesParam !== null || streamPartialImagesParam !== null
   const settings = importedSettings == null
     ? normalizeSettings(currentSettings)
     : activateFirstImportedProfile(mergeImportedSettings(currentSettings, importedSettings), importedSettings)
@@ -313,6 +318,7 @@ function buildRegularSettingsFromUrlParams(currentSettings: Partial<AppSettings>
       if (profileName) patch.name = profileName
       if (codexCliParam !== null) patch.codexCli = codexCliParam.trim().toLowerCase() === 'true'
       if (singleImageRequestsParam !== null) patch.singleImageRequests = singleImageRequestsParam.trim().toLowerCase() === 'true'
+      if (emphasizeOutputSettingsParam !== null) patch.emphasizeOutputSettings = emphasizeOutputSettingsParam.trim().toLowerCase() === 'true'
       if (streamImagesParam !== null) patch.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
       if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
       if (transparentBackgroundMethod !== undefined) patch.transparentBackgroundMethod = transparentBackgroundMethod
@@ -338,6 +344,7 @@ function buildRegularSettingsFromUrlParams(currentSettings: Partial<AppSettings>
     if (profileName) profile.name = profileName
     if (codexCliParam !== null) profile.codexCli = codexCliParam.trim().toLowerCase() === 'true'
     if (singleImageRequestsParam !== null) profile.singleImageRequests = singleImageRequestsParam.trim().toLowerCase() === 'true'
+    if (emphasizeOutputSettingsParam !== null) profile.emphasizeOutputSettings = emphasizeOutputSettingsParam.trim().toLowerCase() === 'true'
     if (streamImagesParam !== null) profile.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) profile.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
     if (transparentBackgroundMethod !== undefined) profile.transparentBackgroundMethod = transparentBackgroundMethod

@@ -26,6 +26,7 @@ export interface DefaultApiUrlPatch {
   name?: string
   codexCli?: boolean
   singleImageRequests?: boolean
+  emphasizeOutputSettings?: boolean
   streamImages?: boolean
   streamPartialImages?: number
   transparentBackgroundMethod?: ApiProfile['transparentBackgroundMethod']
@@ -52,6 +53,7 @@ export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
     const profileNameParam = parsed.searchParams.get('profileName')
     const codexCliParam = parsed.searchParams.get('codexCli')
     const singleImageRequestsParam = parsed.searchParams.get('singleImageRequests')
+    const emphasizeOutputSettingsParam = parsed.searchParams.get('emphasizeOutputSettings')
     const streamImagesParam = parsed.searchParams.get('streamImages')
     const streamPartialImagesParam = parsed.searchParams.get('streamPartialImages')
     const transparentBackgroundMethodParam = parsed.searchParams.get('transparentBackgroundMethod')
@@ -65,6 +67,7 @@ export function parseDefaultApiUrl(rawUrl: string): DefaultApiUrlPatch {
     if (profileNameParam?.trim()) patch.name = profileNameParam.trim()
     if (codexCliParam !== null) patch.codexCli = codexCliParam.trim().toLowerCase() === 'true'
     if (singleImageRequestsParam !== null) patch.singleImageRequests = singleImageRequestsParam.trim().toLowerCase() === 'true'
+    if (emphasizeOutputSettingsParam !== null) patch.emphasizeOutputSettings = emphasizeOutputSettingsParam.trim().toLowerCase() === 'true'
     if (streamImagesParam !== null) patch.streamImages = streamImagesParam.trim().toLowerCase() === 'true'
     if (streamPartialImagesParam !== null) patch.streamPartialImages = normalizeStreamPartialImages(streamPartialImagesParam)
     if (transparentBackgroundMethodParam === 'api' || transparentBackgroundMethodParam === 'local') {

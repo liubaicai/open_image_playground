@@ -98,6 +98,7 @@ export async function callOpenRouterImageApi(opts: CallApiOptions, profile: ApiP
     }
     // 单图模型以多个独立请求满足数量；没有自动重试，避免在状态不明时重复计费。
     const results = await Promise.allSettled(requests.map(async (request) => {
+      opts.onRequestPrompt?.(opts.prompt)
       const response = await apiFetch(`${OPENROUTER_BASE_URL}/images`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${profile.apiKey.trim()}`, 'Content-Type': 'application/json', Accept: 'application/json' },

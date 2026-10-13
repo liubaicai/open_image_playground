@@ -3650,6 +3650,12 @@ async function executeTask(taskId: string) {
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
       skipCodexCliSizePrompt: task.sourceMode === 'agent',
+      onRequestPrompt: (prompt) => {
+        if (taskExecutions.get(taskId) !== execution) return
+        const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+        if (!latest || latest.status !== 'running' || latest.sentPrompt === prompt) return
+        updateTaskInStore(taskId, { sentPrompt: prompt })
+      },
       onFalRequestEnqueued: (request) => {
         if (taskExecutions.get(taskId) !== execution) return
         falRequestInfo = request
@@ -3951,6 +3957,7 @@ export async function retryTask(task: TaskRecord) {
     actualParams: undefined,
     actualParamsByImage: undefined,
     revisedPromptByImage: undefined,
+    sentPrompt: undefined,
     rawImageUrls: undefined,
     rawResponsePayload: undefined,
     streamPartialImageIds: undefined,
